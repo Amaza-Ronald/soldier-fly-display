@@ -677,11 +677,95 @@ def run_mqtt_subscriber():
         print("MQTT subscriber stopped.")
 
 
+# # --- Main Execution Block ---
+# if __name__ == '__main__':
+#     # Initialize database and add dummy data within Flask app context
+#     with app.app_context():
+#         db.create_all() # Creates tables if they don't exist
+#         # Create test user if none exists
+#         if not User.query.filter_by(username='testuser').first():
+#             admin_user = User(username='testuser')
+#             admin_user.set_password('password')
+#             db.session.add(admin_user)
+#             db.session.commit()
+#             print("Test user 'testuser' with password 'password' created.")
+
+#         # # Optional: Add some dummy data for new trays if the database is empty
+#         # if not LarvaeData.query.first():
+#         #     print("Adding dummy data for demonstration.")
+#         #     from random import uniform, randint
+
+#         #     # Add data for tray 1
+#         #     for i in range(1, 10):
+#         #         timestamp = datetime.utcnow() - timedelta(days=9 - i)
+#         #         db.session.add(LarvaeData(
+#         #             tray_number=1,
+#         #             length=round(uniform(10, 20), 1),
+#         #             width=round(uniform(2, 4), 1),
+#         #             area=round(uniform(20, 80), 1),
+#         #             weight=round(uniform(90, 150), 1),
+#         #             count=randint(100, 500),
+#         #             timestamp=timestamp
+#         #         ))
+
+#         #     # Add data for tray 2
+#         #     for i in range(1, 8):
+#         #         timestamp = datetime.utcnow() - timedelta(days=7 - i)
+#         #         db.session.add(LarvaeData(
+#         #             tray_number=2,
+#         #             length=round(uniform(12, 22), 1),
+#         #             width=round(uniform(2.5, 4.5), 1),
+#         #             area=round(uniform(25, 90), 1),
+#         #             weight=round(uniform(95, 160), 1),
+#         #             count=randint(80, 400),
+#         #             timestamp=timestamp
+#         #         ))
+
+#         #     # Add data for tray 3
+#         #     for i in range(1, 12):
+#         #         timestamp = datetime.utcnow() - timedelta(days=11 - i)
+#         #         db.session.add(LarvaeData(
+#         #             tray_number=3,
+#         #             length=round(uniform(9, 18), 1),
+#         #             width=round(uniform(1.8, 3.8), 1),
+#         #             area=round(uniform(18, 70), 1),
+#         #             weight=round(uniform(85, 145), 1),
+#         #             count=randint(120, 600),
+#         #             timestamp=timestamp
+#         #         ))
+
+#         #     # Add dummy data for new trays (e.g., 156, 256, 356) to ensure they appear
+#         #     for tray in [156, 256, 356]:
+#         #         for i in range(1, 7):
+#         #             timestamp = datetime.utcnow() - timedelta(days=6 - i)
+#         #             db.session.add(LarvaeData(
+#         #                 tray_number=tray,
+#         #                 length=round(uniform(15, 25), 1),
+#         #                 width=round(uniform(3, 5), 1),
+#         #                 area=round(uniform(30, 100), 1),
+#         #                 weight=round(uniform(100, 180), 1),
+#         #                 count=randint(150, 700),
+#         #                 timestamp=timestamp
+#         #             ))
+#         #     db.session.commit()
+#         #     print("Dummy data added for demonstration including new trays.")
+
+#     # Start MQTT subscriber in a separate thread
+#     print("Starting MQTT subscriber thread...")
+#     mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
+#     mqtt_thread.daemon = True
+#     mqtt_thread.start()
+#     print("MQTT subscriber thread started.")
+
+#     # Start Flask app in the main thread
+#     print("Starting Flask application...")
+#     app.run(host='0.0.0.0', port=8000, debug=True, use_reloader=False)
+
 # --- Main Execution Block ---
 if __name__ == '__main__':
-    # Initialize database and add dummy data within Flask app context
+    # Initialize database
     with app.app_context():
-        db.create_all() # Creates tables if they don't exist
+        db.create_all()
         # Create test user if none exists
         if not User.query.filter_by(username='testuser').first():
             admin_user = User(username='testuser')
@@ -690,77 +774,22 @@ if __name__ == '__main__':
             db.session.commit()
             print("Test user 'testuser' with password 'password' created.")
 
-        # # Optional: Add some dummy data for new trays if the database is empty
-        # if not LarvaeData.query.first():
-        #     print("Adding dummy data for demonstration.")
-        #     from random import uniform, randint
+    # Start MQTT subscriber in a separate thread (only if not in production with multiple workers)
+    if os.environ.get('RENDER'):
+        print("Running on Render - MQTT thread may be limited")
+    else:
+        print("Starting MQTT subscriber thread...")
+        mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
+        mqtt_thread.daemon = True
+        mqtt_thread.start()
+        print("MQTT subscriber thread started.")
 
-        #     # Add data for tray 1
-        #     for i in range(1, 10):
-        #         timestamp = datetime.utcnow() - timedelta(days=9 - i)
-        #         db.session.add(LarvaeData(
-        #             tray_number=1,
-        #             length=round(uniform(10, 20), 1),
-        #             width=round(uniform(2, 4), 1),
-        #             area=round(uniform(20, 80), 1),
-        #             weight=round(uniform(90, 150), 1),
-        #             count=randint(100, 500),
-        #             timestamp=timestamp
-        #         ))
-
-        #     # Add data for tray 2
-        #     for i in range(1, 8):
-        #         timestamp = datetime.utcnow() - timedelta(days=7 - i)
-        #         db.session.add(LarvaeData(
-        #             tray_number=2,
-        #             length=round(uniform(12, 22), 1),
-        #             width=round(uniform(2.5, 4.5), 1),
-        #             area=round(uniform(25, 90), 1),
-        #             weight=round(uniform(95, 160), 1),
-        #             count=randint(80, 400),
-        #             timestamp=timestamp
-        #         ))
-
-        #     # Add data for tray 3
-        #     for i in range(1, 12):
-        #         timestamp = datetime.utcnow() - timedelta(days=11 - i)
-        #         db.session.add(LarvaeData(
-        #             tray_number=3,
-        #             length=round(uniform(9, 18), 1),
-        #             width=round(uniform(1.8, 3.8), 1),
-        #             area=round(uniform(18, 70), 1),
-        #             weight=round(uniform(85, 145), 1),
-        #             count=randint(120, 600),
-        #             timestamp=timestamp
-        #         ))
-
-        #     # Add dummy data for new trays (e.g., 156, 256, 356) to ensure they appear
-        #     for tray in [156, 256, 356]:
-        #         for i in range(1, 7):
-        #             timestamp = datetime.utcnow() - timedelta(days=6 - i)
-        #             db.session.add(LarvaeData(
-        #                 tray_number=tray,
-        #                 length=round(uniform(15, 25), 1),
-        #                 width=round(uniform(3, 5), 1),
-        #                 area=round(uniform(30, 100), 1),
-        #                 weight=round(uniform(100, 180), 1),
-        #                 count=randint(150, 700),
-        #                 timestamp=timestamp
-        #             ))
-        #     db.session.commit()
-        #     print("Dummy data added for demonstration including new trays.")
-
-    # Start MQTT subscriber in a separate thread
-    print("Starting MQTT subscriber thread...")
-    mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
-    mqtt_thread.daemon = True
-    mqtt_thread.start()
-    print("MQTT subscriber thread started.")
-
-    # Start Flask app in the main thread
+    # Get port from environment variable (Render provides this)
+    port = int(os.environ.get('PORT', 8000))
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
     print("Starting Flask application...")
-    app.run(host='0.0.0.0', port=8000, debug=True, use_reloader=False)
-
+    app.run(host='0.0.0.0', port=port, debug=debug_mode, use_reloader=False)
 
 
 
