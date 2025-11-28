@@ -10,6 +10,9 @@ import paho.mqtt.client as mqtt
 import json
 import time # Although not heavily used, keep it if needed for future sleep operations
 from random import uniform, randint
+import base64
+from PIL import Image
+from io import BytesIO
 
 # --- Flask App Configuration ---
 app = Flask(__name__)
@@ -48,6 +51,32 @@ class LarvaeData(db.Model):
 
     def __repr__(self):
         return f"<LarvaData Tray {self.tray_number}: Count={self.count} at {self.timestamp}>"
+    
+    
+# NEW: ImageFile model with BLOB storage
+class ImageFile(db.Model):
+    __tablename__ = "image_files"
+    id = db.Column(db.Integer, primary_key=True)
+    tray_number = db.Column(db.Integer, nullable=False)
+    
+    # BLOB fields for image storage
+    image_data = db.Column(db.LargeBinary, nullable=False)  # Actual image binary data
+    image_format = db.Column(db.String(10), nullable=False)  # jpeg, png, etc.
+    image_size = db.Column(db.Integer, nullable=False)       # Size in bytes
+    
+    # Metadata
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    avg_length = db.Column(db.Float, nullable=True)
+    avg_weight = db.Column(db.Float, nullable=True)
+    count = db.Column(db.Integer, nullable=True)
+    
+    # Classification data
+    bounding_boxes = db.Column(db.String, nullable=True)  # JSON string
+    masks = db.Column(db.String, nullable=True)          # JSON string
+
+    def __repr__(self):
+        return f"<ImageFile Tray {self.tray_number} - {self.timestamp}>"
+
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -152,6 +181,57 @@ def register():
             flash(f'Registration failed: {e}. Please try again.', 'danger')
 
     return render_template('register.html')
+
+# NEW: Image serving routes for BLOB storage
+@app.route('/image/<int:image_id>')
+@login_required
+def get_image(image_id):
+    """Serve image directly from database BLOB"""
+    try:
+        image_file = ImageFile.query.get_or_404(image_id)
+        
+        # Return image with proper MIME type
+        from flask import Response
+        return Response(
+            image_file.image_data,
+            mimetype=f'image/{image_file.image_format}',
+            headers={
+                'Content-Length': image_file.image_size,
+                'Cache-Control': 'public, max-age=3600'  # Cache for 1 hour
+            }
+        )
+    except Exception as e:
+        app.logger.error(f"Error serving image {image_id}: {e}")
+        return jsonify({"error": "Image not found"}), 404
+
+@app.route('/image_thumbnail/<int:image_id>')
+@login_required
+def get_image_thumbnail(image_id):
+    """Serve resized thumbnail from database BLOB"""
+    try:
+        image_file = ImageFile.query.get_or_404(image_id)
+        
+        # Create thumbnail
+        img = Image.open(BytesIO(image_file.image_data))
+        img.thumbnail((300, 300))  # Create thumbnail
+        
+        # Convert back to bytes
+        output = BytesIO()
+        img.save(output, format=image_file.image_format.upper())
+        thumbnail_data = output.getvalue()
+        
+        return Response(
+            thumbnail_data,
+            mimetype=f'image/{image_file.image_format}',
+            headers={
+                'Content-Length': len(thumbnail_data),
+                'Cache-Control': 'public, max-age=3600'
+            }
+        )
+    except Exception as e:
+        app.logger.error(f"Error serving thumbnail {image_id}: {e}")
+        return jsonify({"error": "Thumbnail not found"}), 404
+
 
 @app.route('/get_tray_data/<int:tray_number>')
 @login_required
@@ -419,7 +499,8 @@ MQTT_TOPIC = "bsf_monitor/larvae_data" # IMPORTANT: This MUST match the topic in
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
-# --- MQTT Callbacks (Modified to use Flask-SQLAlchemy's db.session) ---
+
+# --- MQTT Callbacks (UPDATED for BLOB storage) ---
 def on_connect(client, userdata, flags, rc, properties):
     """Callback function for when the MQTT client connects to the broker."""
     if rc == 0:
@@ -430,35 +511,164 @@ def on_connect(client, userdata, flags, rc, properties):
         print(f"Failed to connect, return code {rc}\n")
 
 def on_message(client, userdata, msg):
-    """Callback function for when a message is received from the broker."""
-    # Process the message only if it's on the expected topic
-    if msg.topic == MQTT_TOPIC:
-        try:
-            payload = json.loads(msg.payload.decode())
-            print(f"Received data: {payload}")
+    """Callback function for when an MQTT message is received."""
+    print(f"Received message on topic {msg.topic}")
+    try:
+        data = json.loads(msg.payload.decode('utf-8'))
 
-            # Push a new application context for this thread
-            # This is CRITICAL for using the database within a separate thread
-            with app.app_context():
-                # Create a new LarvaData instance and save it to the database
-                new_data = LarvaeData(
-                    tray_number=payload.get("tray_number"),
-                    length=payload.get("length"),
-                    width=payload.get("width"),
-                    area=payload.get("area"),
-                    weight=payload.get("weight"),
-                    count=payload.get("count"),
-                    timestamp=datetime.utcnow()
+        # Extract relevant fields from the incoming data
+        tray_number = data.get("tray_number")
+        bounding_boxes = data.get("bounding_boxes")
+        masks = data.get("masks")
+        image_data_base64 = data.get("image_data_base64")
+
+        # Validate incoming data (basic check, more robust validation could be added)
+        required_keys = ["tray_number", "length", "width", "area", "weight", "count"]
+        if not all(key in data for key in required_keys):
+            print("Error: Received payload is missing required keys.")
+            return
+
+        # Use Flask's app context to interact with the database in the MQTT thread
+        with app.app_context():
+            try:
+                # Save larvae data
+                new_entry = LarvaeData(
+                    tray_number=data["tray_number"],
+                    length=data["length"],
+                    width=data["width"],
+                    area=data["area"],
+                    weight=data["weight"],
+                    count=data["count"],
+                    timestamp=datetime.utcnow() # Use current UTC time for consistency
                 )
-                db.session.add(new_data)
-                db.session.commit()
-                print("Data saved to database.")
+                db.session.add(new_entry)
+                
+                # NEW: Save image to database BLOB if present
+                if image_data_base64:
+                    # Decode base64 image
+                    image_bytes = base64.b64decode(image_data_base64)
+                    
+                    # Get image format and size
+                    img = Image.open(BytesIO(image_bytes))
+                    image_format = img.format.lower() if img.format else 'jpeg'
+                    image_size = len(image_bytes)
+                    
+                    # Compress image if too large (optional)
+                    if image_size > 2 * 1024 * 1024:  # 2MB
+                        output = BytesIO()
+                        img.save(output, format='JPEG', quality=85, optimize=True)
+                        image_bytes = output.getvalue()
+                        image_size = len(image_bytes)
+                        image_format = 'jpeg'
+                    
+                    # Create new image record with BLOB data
+                    new_image_file = ImageFile(
+                        tray_number=tray_number,
+                        image_data=image_bytes,
+                        image_format=image_format,
+                        image_size=image_size,
+                        avg_length=data.get('avg_length'),
+                        avg_weight=data.get('avg_weight'),
+                        count=data.get('count'),
+                        bounding_boxes=json.dumps(bounding_boxes) if bounding_boxes else None,
+                        masks=json.dumps(masks) if masks else None
+                    )
+                    db.session.add(new_image_file)
+                    print(f"✅ Image saved to database BLOB for Tray {tray_number}, Size: {image_size} bytes")
 
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON payload: {e}")
+                db.session.commit()
+                print(f"✅ Data saved to database for Tray {tray_number}")
+
+            except Exception as e:
+                db.session.rollback() # Rollback the transaction on error
+                print(f"❌ Error storing data to database: {e}")
+            finally:
+                # Ensure the session is removed after each message processing.
+                # This is crucial for thread safety with Flask-SQLAlchemy's scoped sessions.
+                db.session.remove()
+
+    except json.JSONDecodeError:
+        print(f"Error: Could not decode JSON from message: {msg.payload.decode()}")
+    except Exception as e:
+        print(f"An unexpected error occurred in on_message: {e}")
+
+
+# Add this route to your existing Flask routes
+
+@app.route('/api/upload', methods=['POST'])
+@login_required
+def upload_image():
+    """Handle image upload and store in database as BLOB"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        image_data = data.get('image_data')
+        tray_number = data.get('tray_number')
+        count = data.get('count', 0)
+        avg_length = data.get('avg_length', 0)
+        avg_weight = data.get('avg_weight', 0)
+        bounding_boxes_json = data.get('bounding_boxes', '[]')
+        masks_json = data.get('masks', '[]')
+        
+        if not image_data or not tray_number:
+            return jsonify({"error": "Missing image data or tray number"}), 400
+
+        # Decode the base64 image
+        try:
+            image_binary = base64.b64decode(image_data)
         except Exception as e:
-            print(f"An error occurred while processing MQTT message: {e}")
-            db.session.rollback() # Rollback the session on error
+            return jsonify({"error": "Invalid image data"}), 400
+
+        # Process image for BLOB storage
+        try:
+            img = Image.open(BytesIO(image_binary))
+            image_format = img.format.lower() if img.format else 'jpeg'
+            image_size = len(image_binary)
+            
+            # Compress if too large (optional)
+            if image_size > 2 * 1024 * 1024:  # 2MB
+                output = BytesIO()
+                img.save(output, format='JPEG', quality=85, optimize=True)
+                image_binary = output.getvalue()
+                image_size = len(image_binary)
+                image_format = 'jpeg'
+        except Exception as e:
+            return jsonify({"error": "Invalid image format"}), 400
+        
+        # Create ImageFile entry with BLOB data
+        try:
+            new_image = ImageFile(
+                tray_number=tray_number,
+                image_data=image_binary,
+                image_format=image_format,
+                image_size=image_size,
+                count=count,
+                avg_length=avg_length,
+                avg_weight=avg_weight,
+                bounding_boxes=bounding_boxes_json,
+                masks=masks_json
+            )
+            
+            db.session.add(new_image)
+            db.session.commit()
+            
+            return jsonify({
+                "message": "Image saved to database successfully",
+                "image_id": new_image.id,
+                "size": image_size,
+                "tray_number": tray_number
+            }), 200
+
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": "Database error: " + str(e)}), 500
+
+    except Exception as e:
+        print(f"Error during image upload: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+    
 
 # --- MQTT Thread Function ---
 def run_mqtt_subscriber():
