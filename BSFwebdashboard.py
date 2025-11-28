@@ -232,7 +232,7 @@ def get_images(tray_number):
 # Add this route to your existing Flask routes
 
 @app.route('/api/upload', methods=['POST'])
-@login_required
+#@login_required
 def upload_image():
     """Handle image upload and store in database as BLOB"""
     try:
@@ -670,7 +670,7 @@ def catch_all(path):
     return redirect(url_for('dashboard'))
 
 
-# --- MQTT Thread Function ---
+# --- MQTT Thread Function 
 def run_mqtt_subscriber():
     # Assign the callbacks
     mqtt_client.on_connect = on_connect
