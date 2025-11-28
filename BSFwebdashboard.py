@@ -661,6 +661,15 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print(f"An unexpected error occurred in on_message: {e}")
 
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+@login_required
+def catch_all(path):
+    """Catch all routes and redirect to dashboard for client-side routing"""
+    return redirect(url_for('dashboard'))
+
+
 # --- MQTT Thread Function ---
 def run_mqtt_subscriber():
     # Assign the callbacks
