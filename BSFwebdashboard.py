@@ -783,15 +783,19 @@ if __name__ == '__main__':
             db.session.commit()
             print("Test user 'testuser' with password 'password' created.")
 
-    # Start MQTT subscriber in a separate thread (only if not in production with multiple workers)
-    if os.environ.get('RENDER'):
-        print("Running on Render - MQTT thread may be limited")
-    else:
-        print("Starting MQTT subscriber thread...")
+    # Debug MQTT startup
+    print("=== MQTT DEBUG ===")
+    print(f"RENDER environment: {os.environ.get('RENDER', 'Not set')}")
+    print("Starting MQTT thread...")
+    
+    try:
         mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
         mqtt_thread.daemon = True
         mqtt_thread.start()
-        print("MQTT subscriber thread started.")
+        print("✅ MQTT thread started successfully")
+        print(f"MQTT thread alive: {mqtt_thread.is_alive()}")
+    except Exception as e:
+        print(f"❌ MQTT thread failed: {e}")
 
     # Get port from environment variable (Render provides this)
     port = int(os.environ.get('PORT', 8000))
