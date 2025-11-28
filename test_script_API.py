@@ -4,7 +4,7 @@ import json
 import os
 
 # Configuration
-BASE_URL = "http://localhost:8000"  # Your local Flask app
+BASE_URL = "https://soldier-fly-display-1.onrender.com"  # Your local Flask app
 LOGIN_URL = f"{BASE_URL}/login"
 UPLOAD_URL = f"{BASE_URL}/api/upload"
 
