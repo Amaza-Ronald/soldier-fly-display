@@ -8,3 +8,13 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+
+  - type: worker
+    name: mqtt-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python mqtt_worker.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
