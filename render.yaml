@@ -10,3 +10,15 @@ services:
         value: "postgresql://bsf_user:dQ5VfLVw3eLsp9aYSw01Eyn7gxu3GDDx@dpg-d4lg6ha4d50c73e2llq0-a.oregon-postgres.render.com/bsf_larvae"
       - key: PYTHON_VERSION
         value: 3.11.0
+
+  - type: worker
+    name: mqtt-worker
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python mqtt_worker.py
+    envVars:
+      - key: DATABASE_URL
+        value: "postgresql://bsf_user:dQ5VfLVw3eLsp9aYSw01Eyn7gxu3GDDx@dpg-d4lg6ha4d50c73e2llq0-a.oregon-postgres.render.com/bsf_larvae"
+      - key: PYTHON_VERSION
+        value: 3.11.0
