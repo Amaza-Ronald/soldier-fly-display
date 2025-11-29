@@ -63,12 +63,64 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-# --- Database Models (UPDATED for BLOB consistency with app.py) ---
+# # --- Database Models (UPDATED for BLOB consistency with app.py) ---
+# class User(UserMixin, db.Model):
+#     id = db.Column(db.Integer, primary_key=True)
+#     username = db.Column(db.String(50), unique=True, nullable=False)
+#     password_hash = db.Column(db.String(128), nullable=False)
+#     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+#     def set_password(self, password):
+#         self.password_hash = generate_password_hash(password)
+
+#     def check_password(self, password):
+#         return check_password_hash(self.password_hash, password)
+
+# # CHANGED: Updated ImageFile model to use BLOB storage like app.py
+# class ImageFile(db.Model):
+#     __tablename__ = "image_files"
+#     id = db.Column(db.Integer, primary_key=True)
+#     tray_number = db.Column(db.Integer, nullable=False)
+    
+#     # CHANGED: Use BLOB fields for image storage instead of file paths
+#     image_data = db.Column(db.LargeBinary, nullable=False)  # Actual image binary data
+#     image_format = db.Column(db.String(10), nullable=False)  # jpeg, png, etc.
+#     image_size = db.Column(db.Integer, nullable=False)       # Size in bytes
+    
+#     # Metadata
+#     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+#     avg_length = db.Column(db.Float, nullable=True)
+#     avg_weight = db.Column(db.Float, nullable=True)
+#     count = db.Column(db.Integer, nullable=True)
+    
+#     # Classification data
+#     bounding_boxes = db.Column(db.String, nullable=True)  # JSON string
+#     masks = db.Column(db.String, nullable=True)          # JSON string
+
+#     def __repr__(self):
+#         return f"<ImageFile Tray {self.tray_number} - {self.timestamp}>"
+
+# class LarvaeData(db.Model):
+#     __tablename__ = "larvae_data"
+#     id = db.Column(db.Integer, primary_key=True)
+#     tray_number = db.Column(db.Integer, nullable=False)
+#     length = db.Column(db.Float, nullable=False)
+#     width = db.Column(db.Float, nullable=False)
+#     area = db.Column(db.Float, nullable=False)
+#     weight = db.Column(db.Float, nullable=False)
+#     count = db.Column(db.Integer, nullable=False)
+#     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+#     def __repr__(self):
+#         return f"<LarvaeData Tray {self.tray_number} - {self.timestamp}>"
+
+
+# --- Database Models (UPDATED for PostgreSQL) ---
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    password_hash = db.Column(db.Text, nullable=False)  # CHANGED: String → Text (unlimited length)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -76,26 +128,25 @@ class User(UserMixin, db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
-# CHANGED: Updated ImageFile model to use BLOB storage like app.py
 class ImageFile(db.Model):
     __tablename__ = "image_files"
     id = db.Column(db.Integer, primary_key=True)
     tray_number = db.Column(db.Integer, nullable=False)
     
-    # CHANGED: Use BLOB fields for image storage instead of file paths
-    image_data = db.Column(db.LargeBinary, nullable=False)  # Actual image binary data
-    image_format = db.Column(db.String(10), nullable=False)  # jpeg, png, etc.
-    image_size = db.Column(db.Integer, nullable=False)       # Size in bytes
+    # Use LargeBinary for PostgreSQL BYTEA
+    image_data = db.Column(db.LargeBinary, nullable=False)
+    image_format = db.Column(db.String(10), nullable=False)
+    image_size = db.Column(db.Integer, nullable=False)
     
     # Metadata
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     avg_length = db.Column(db.Float, nullable=True)
     avg_weight = db.Column(db.Float, nullable=True)
     count = db.Column(db.Integer, nullable=True)
     
-    # Classification data
-    bounding_boxes = db.Column(db.String, nullable=True)  # JSON string
-    masks = db.Column(db.String, nullable=True)          # JSON string
+    # Use Text for PostgreSQL (better for large JSON)
+    bounding_boxes = db.Column(db.Text, nullable=True)
+    masks = db.Column(db.Text, nullable=True)
 
     def __repr__(self):
         return f"<ImageFile Tray {self.tray_number} - {self.timestamp}>"
@@ -109,7 +160,7 @@ class LarvaeData(db.Model):
     area = db.Column(db.Float, nullable=False)
     weight = db.Column(db.Float, nullable=False)
     count = db.Column(db.Integer, nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def __repr__(self):
         return f"<LarvaeData Tray {self.tray_number} - {self.timestamp}>"
