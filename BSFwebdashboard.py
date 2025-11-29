@@ -41,6 +41,9 @@ from random import uniform, randint
 import json
 import time
 
+import threading
+import paho.mqtt.client as mqtt
+
 # --- Flask App Configuration ---
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
@@ -62,6 +65,15 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+
+
+# --- MQTT Configuration ---
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_PORT = 1883
+MQTT_TOPIC = "bsf_monitor/larvae_data"
+
+mqtt_client = None
+mqtt_thread = None
 
 # # --- Database Models (UPDATED for BLOB consistency with app.py) ---
 # class User(UserMixin, db.Model):
@@ -651,103 +663,6 @@ def logout():
     flash('You have been logged out', 'success')
     return redirect(url_for('login'))
 
-# # --- MQTT Configuration ---
-# MQTT_BROKER = "broker.hivemq.com"
-# MQTT_PORT = 1883
-# MQTT_TOPIC = "bsf_monitor/larvae_data" # IMPORTANT: This MUST match the topic in your data publisher!
-
-# mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-
-# # CHANGED: Fixed MQTT callbacks to use BLOB storage and correct variable references
-# def on_connect(client, userdata, flags, rc, properties):
-#     """Callback function for when the MQTT client connects to the broker."""
-#     if rc == 0:
-#         print("Connected to MQTT Broker!")
-#         client.subscribe(MQTT_TOPIC)
-#         print(f"Subscribed to topic: {MQTT_TOPIC}")
-#     else:
-#         print(f"Failed to connect, return code {rc}\n")
-
-# def on_message(client, userdata, msg):
-#     """Callback function for when an MQTT message is received."""
-#     print(f"Received message on topic {msg.topic}")
-#     try:
-#         data = json.loads(msg.payload.decode('utf-8'))
-
-#         # CHANGED: Extract all variables from data, not undefined ones
-#         tray_number = data.get("tray_number")
-#         bounding_boxes = data.get("bounding_boxes")
-#         masks = data.get("masks")
-#         image_data_base64 = data.get("image_data_base64")
-
-#         # Validate incoming data
-#         required_keys = ["tray_number", "length", "width", "area", "weight", "count"]
-#         if not all(key in data for key in required_keys):
-#             print("Error: Received payload is missing required keys.")
-#             return
-
-#         # Use Flask's app context to interact with the database in the MQTT thread
-#         with app.app_context():
-#             try:
-#                 # Save larvae data
-#                 new_entry = LarvaeData(
-#                     tray_number=data["tray_number"],
-#                     length=data["length"],
-#                     width=data["width"],
-#                     area=data["area"],
-#                     weight=data["weight"],
-#                     count=data["count"],
-#                     timestamp=datetime.utcnow()
-#                 )
-#                 db.session.add(new_entry)
-                
-#                 # CHANGED: Save image to database BLOB if present (no file system storage)
-#                 if image_data_base64:
-#                     # Decode base64 image
-#                     image_bytes = base64.b64decode(image_data_base64)
-                    
-#                     # Get image format and size
-#                     img = Image.open(BytesIO(image_bytes))
-#                     image_format = img.format.lower() if img.format else 'jpeg'
-#                     image_size = len(image_bytes)
-                    
-#                     # Compress image if too large (optional)
-#                     if image_size > 2 * 1024 * 1024:  # 2MB
-#                         output = BytesIO()
-#                         img.save(output, format='JPEG', quality=85, optimize=True)
-#                         image_bytes = output.getvalue()
-#                         image_size = len(image_bytes)
-#                         image_format = 'jpeg'
-                    
-#                     # Create new image record with BLOB data
-#                     new_image_file = ImageFile(
-#                         tray_number=tray_number,
-#                         image_data=image_bytes,
-#                         image_format=image_format,
-#                         image_size=image_size,
-#                         avg_length=data.get('avg_length'),
-#                         avg_weight=data.get('avg_weight'),
-#                         count=data.get('count'),
-#                         bounding_boxes=json.dumps(bounding_boxes) if bounding_boxes else None,
-#                         masks=json.dumps(masks) if masks else None
-#                     )
-#                     db.session.add(new_image_file)
-#                     print(f"✅ Image saved to database BLOB for Tray {tray_number}, Size: {image_size} bytes")
-
-#                 db.session.commit()
-#                 print(f"✅ Data saved to database for Tray {tray_number}")
-
-#             except Exception as e:
-#                 db.session.rollback()
-#                 print(f"❌ Error storing data to database: {e}")
-#             finally:
-#                 db.session.remove()
-
-#     except json.JSONDecodeError:
-#         print(f"Error: Could not decode JSON from message: {msg.payload.decode()}")
-#     except Exception as e:
-#         print(f"An unexpected error occurred in on_message: {e}")
-
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
@@ -757,21 +672,127 @@ def catch_all(path):
     return redirect(url_for('dashboard'))
 
 
-# # --- MQTT Thread Function 
-# def run_mqtt_subscriber():
-#     # Assign the callbacks
-#     mqtt_client.on_connect = on_connect
-#     mqtt_client.on_message = on_message
+# Add MQTT callbacks (after your routes)
+def on_connect(client, userdata, flags, rc, properties):
+    """Callback function for when the MQTT client connects to the broker."""
+    if rc == 0:
+        print("✅ MQTT Connected to Broker!")
+        client.subscribe(MQTT_TOPIC)
+        print(f"Subscribed to topic: {MQTT_TOPIC}")
+    else:
+        print(f"❌ MQTT Connection failed: {rc}")
 
-#     # Start the client loop
-#     try:
-#         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-#         mqtt_client.loop_forever() # This is a blocking call
-#     except Exception as e:
-#         print(f"Failed to connect to MQTT broker or loop error: {e}")
-#     finally:
-#         print("MQTT subscriber stopped.")
+def on_message(client, userdata, msg):
+    """Callback function for when an MQTT message is received."""
+    print(f"📨 MQTT received message on {msg.topic}")
+    try:
+        data = json.loads(msg.payload.decode('utf-8'))
+        
+        tray_number = data.get("tray_number")
+        image_data_base64 = data.get("image_data_base64")
+        bounding_boxes = data.get("bounding_boxes")
+        masks = data.get("masks")
 
+        # Validate incoming data
+        required_keys = ["tray_number", "length", "width", "area", "weight", "count"]
+        if not all(key in data for key in required_keys):
+            print("❌ Missing required keys in MQTT message")
+            return
+
+        # Use Flask's app context
+        with app.app_context():
+            try:
+                # Save larvae data
+                new_entry = LarvaeData(
+                    tray_number=data["tray_number"],
+                    length=data["length"],
+                    width=data["width"],
+                    area=data["area"],
+                    weight=data["weight"],
+                    count=data["count"],
+                    timestamp=datetime.now(timezone.utc)
+                )
+                db.session.add(new_entry)
+                
+                # Save image if present
+                if image_data_base64:
+                    try:
+                        image_bytes = base64.b64decode(image_data_base64)
+                        img = Image.open(BytesIO(image_bytes))
+                        image_format = img.format.lower() if img.format else 'jpeg'
+                        image_size = len(image_bytes)
+                        
+                        # Compress if too large
+                        if image_size > 2 * 1024 * 1024:
+                            output = BytesIO()
+                            img.save(output, format='JPEG', quality=85, optimize=True)
+                            image_bytes = output.getvalue()
+                            image_size = len(image_bytes)
+                            image_format = 'jpeg'
+                        
+                        new_image_file = ImageFile(
+                            tray_number=tray_number,
+                            image_data=image_bytes,
+                            image_format=image_format,
+                            image_size=image_size,
+                            avg_length=data.get('avg_length'),
+                            avg_weight=data.get('avg_weight'),
+                            count=data.get('count'),
+                            bounding_boxes=json.dumps(bounding_boxes) if bounding_boxes else None,
+                            masks=json.dumps(masks) if masks else None,
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        db.session.add(new_image_file)
+                        print(f"✅ Image saved via MQTT for Tray {tray_number}")
+                        
+                    except Exception as img_error:
+                        print(f"❌ Image processing error: {img_error}")
+                        # Continue without image
+
+                db.session.commit()
+                print(f"✅ MQTT data saved for Tray {tray_number}")
+
+            except Exception as e:
+                db.session.rollback()
+                print(f"❌ Database error in MQTT: {e}")
+            finally:
+                db.session.remove()
+
+    except json.JSONDecodeError:
+        print(f"❌ JSON decode error in MQTT message")
+    except Exception as e:
+        print(f"❌ MQTT message processing error: {e}")
+
+def run_mqtt_subscriber():
+    """Run MQTT subscriber with reconnection logic"""
+    global mqtt_client
+    
+    while True:
+        try:
+            print("🚀 Starting MQTT subscriber...")
+            mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+            mqtt_client.on_connect = on_connect
+            mqtt_client.on_message = on_message
+            
+            mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            print("🔄 Starting MQTT loop...")
+            mqtt_client.loop_forever()
+            
+        except Exception as e:
+            print(f"❌ MQTT error: {e}")
+            print("🔄 Reconnecting in 30 seconds...")
+            time.sleep(30)
+
+def start_mqtt_thread():
+    """Start MQTT in a background thread"""
+    global mqtt_thread
+    try:
+        mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
+        mqtt_thread.daemon = True  # Thread will be killed when main process exits
+        mqtt_thread.start()
+        print("✅ MQTT thread started successfully")
+    except Exception as e:
+        print(f"❌ Failed to start MQTT thread: {e}")
 
 # --- Main Execution Block ---
 if __name__ == '__main__':
@@ -786,24 +807,16 @@ if __name__ == '__main__':
             db.session.commit()
             print("Test user 'testuser' with password 'password' created.")
 
-    # # Debug MQTT startup
-    # print("=== MQTT DEBUG ===")
-    # print(f"RENDER environment: {os.environ.get('RENDER', 'Not set')}")
-    # print("Starting MQTT thread...")
+    # Start MQTT in background thread
+    print("=== MQTT SETUP ===")
+    start_mqtt_thread()
     
-    # try:
-    #     mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
-    #     mqtt_thread.daemon = True
-    #     mqtt_thread.start()
-    #     print("✅ MQTT thread started successfully")
-    #     print(f"MQTT thread alive: {mqtt_thread.is_alive()}")
-    # except Exception as e:
-    #     print(f"❌ MQTT thread failed: {e}")
+    # Wait a moment to see if MQTT connects
+    time.sleep(5)
 
-    # Get port from environment variable (Render provides this)
+    # Get port from environment variable
     port = int(os.environ.get('PORT', 8000))
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
     print("Starting Flask application...")
     app.run(host='0.0.0.0', port=port, debug=debug_mode, use_reloader=False)
-
