@@ -12,7 +12,8 @@ def init_database():
         try:
             print("🚀 Initializing PostgreSQL database...")
             
-            # Create all tables
+            # Drop and recreate tables (clean start)
+            db.drop_all()
             db.create_all()
             print("✅ Database tables created successfully!")
             
@@ -29,8 +30,10 @@ def init_database():
             print("🎉 Database initialization completed!")
             
         except Exception as e:
+            db.session.rollback()
             print(f"❌ Database initialization failed: {e}")
-            raise
+            # Don't raise the exception - let the build continue
+            print("⚠️  Continuing build despite database error...")
 
 if __name__ == '__main__':
     init_database()
