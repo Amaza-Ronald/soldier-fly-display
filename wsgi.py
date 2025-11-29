@@ -1,9 +1,12 @@
-# from BSFwebdashboard import app
+from BSFwebdashboard import app, start_mqtt_thread
+import time
 
-# if __name__ == "__main__":
-#     app.run()
+# Start MQTT when the app loads (for production)
+print("🚀 Initializing MQTT subscriber in production...")
+start_mqtt_thread()
 
-from BSFwebdashboard import app
+# Give MQTT a moment to start
+time.sleep(3)
 
 if __name__ == "__main__":
     app.run()
