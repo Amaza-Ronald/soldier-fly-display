@@ -564,102 +564,102 @@ def logout():
     flash('You have been logged out', 'success')
     return redirect(url_for('login'))
 
-# --- MQTT Configuration ---
-MQTT_BROKER = "broker.hivemq.com"
-MQTT_PORT = 1883
-MQTT_TOPIC = "bsf_monitor/larvae_data" # IMPORTANT: This MUST match the topic in your data publisher!
+# # --- MQTT Configuration ---
+# MQTT_BROKER = "broker.hivemq.com"
+# MQTT_PORT = 1883
+# MQTT_TOPIC = "bsf_monitor/larvae_data" # IMPORTANT: This MUST match the topic in your data publisher!
 
-mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+# mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 
-# CHANGED: Fixed MQTT callbacks to use BLOB storage and correct variable references
-def on_connect(client, userdata, flags, rc, properties):
-    """Callback function for when the MQTT client connects to the broker."""
-    if rc == 0:
-        print("Connected to MQTT Broker!")
-        client.subscribe(MQTT_TOPIC)
-        print(f"Subscribed to topic: {MQTT_TOPIC}")
-    else:
-        print(f"Failed to connect, return code {rc}\n")
+# # CHANGED: Fixed MQTT callbacks to use BLOB storage and correct variable references
+# def on_connect(client, userdata, flags, rc, properties):
+#     """Callback function for when the MQTT client connects to the broker."""
+#     if rc == 0:
+#         print("Connected to MQTT Broker!")
+#         client.subscribe(MQTT_TOPIC)
+#         print(f"Subscribed to topic: {MQTT_TOPIC}")
+#     else:
+#         print(f"Failed to connect, return code {rc}\n")
 
-def on_message(client, userdata, msg):
-    """Callback function for when an MQTT message is received."""
-    print(f"Received message on topic {msg.topic}")
-    try:
-        data = json.loads(msg.payload.decode('utf-8'))
+# def on_message(client, userdata, msg):
+#     """Callback function for when an MQTT message is received."""
+#     print(f"Received message on topic {msg.topic}")
+#     try:
+#         data = json.loads(msg.payload.decode('utf-8'))
 
-        # CHANGED: Extract all variables from data, not undefined ones
-        tray_number = data.get("tray_number")
-        bounding_boxes = data.get("bounding_boxes")
-        masks = data.get("masks")
-        image_data_base64 = data.get("image_data_base64")
+#         # CHANGED: Extract all variables from data, not undefined ones
+#         tray_number = data.get("tray_number")
+#         bounding_boxes = data.get("bounding_boxes")
+#         masks = data.get("masks")
+#         image_data_base64 = data.get("image_data_base64")
 
-        # Validate incoming data
-        required_keys = ["tray_number", "length", "width", "area", "weight", "count"]
-        if not all(key in data for key in required_keys):
-            print("Error: Received payload is missing required keys.")
-            return
+#         # Validate incoming data
+#         required_keys = ["tray_number", "length", "width", "area", "weight", "count"]
+#         if not all(key in data for key in required_keys):
+#             print("Error: Received payload is missing required keys.")
+#             return
 
-        # Use Flask's app context to interact with the database in the MQTT thread
-        with app.app_context():
-            try:
-                # Save larvae data
-                new_entry = LarvaeData(
-                    tray_number=data["tray_number"],
-                    length=data["length"],
-                    width=data["width"],
-                    area=data["area"],
-                    weight=data["weight"],
-                    count=data["count"],
-                    timestamp=datetime.utcnow()
-                )
-                db.session.add(new_entry)
+#         # Use Flask's app context to interact with the database in the MQTT thread
+#         with app.app_context():
+#             try:
+#                 # Save larvae data
+#                 new_entry = LarvaeData(
+#                     tray_number=data["tray_number"],
+#                     length=data["length"],
+#                     width=data["width"],
+#                     area=data["area"],
+#                     weight=data["weight"],
+#                     count=data["count"],
+#                     timestamp=datetime.utcnow()
+#                 )
+#                 db.session.add(new_entry)
                 
-                # CHANGED: Save image to database BLOB if present (no file system storage)
-                if image_data_base64:
-                    # Decode base64 image
-                    image_bytes = base64.b64decode(image_data_base64)
+#                 # CHANGED: Save image to database BLOB if present (no file system storage)
+#                 if image_data_base64:
+#                     # Decode base64 image
+#                     image_bytes = base64.b64decode(image_data_base64)
                     
-                    # Get image format and size
-                    img = Image.open(BytesIO(image_bytes))
-                    image_format = img.format.lower() if img.format else 'jpeg'
-                    image_size = len(image_bytes)
+#                     # Get image format and size
+#                     img = Image.open(BytesIO(image_bytes))
+#                     image_format = img.format.lower() if img.format else 'jpeg'
+#                     image_size = len(image_bytes)
                     
-                    # Compress image if too large (optional)
-                    if image_size > 2 * 1024 * 1024:  # 2MB
-                        output = BytesIO()
-                        img.save(output, format='JPEG', quality=85, optimize=True)
-                        image_bytes = output.getvalue()
-                        image_size = len(image_bytes)
-                        image_format = 'jpeg'
+#                     # Compress image if too large (optional)
+#                     if image_size > 2 * 1024 * 1024:  # 2MB
+#                         output = BytesIO()
+#                         img.save(output, format='JPEG', quality=85, optimize=True)
+#                         image_bytes = output.getvalue()
+#                         image_size = len(image_bytes)
+#                         image_format = 'jpeg'
                     
-                    # Create new image record with BLOB data
-                    new_image_file = ImageFile(
-                        tray_number=tray_number,
-                        image_data=image_bytes,
-                        image_format=image_format,
-                        image_size=image_size,
-                        avg_length=data.get('avg_length'),
-                        avg_weight=data.get('avg_weight'),
-                        count=data.get('count'),
-                        bounding_boxes=json.dumps(bounding_boxes) if bounding_boxes else None,
-                        masks=json.dumps(masks) if masks else None
-                    )
-                    db.session.add(new_image_file)
-                    print(f"✅ Image saved to database BLOB for Tray {tray_number}, Size: {image_size} bytes")
+#                     # Create new image record with BLOB data
+#                     new_image_file = ImageFile(
+#                         tray_number=tray_number,
+#                         image_data=image_bytes,
+#                         image_format=image_format,
+#                         image_size=image_size,
+#                         avg_length=data.get('avg_length'),
+#                         avg_weight=data.get('avg_weight'),
+#                         count=data.get('count'),
+#                         bounding_boxes=json.dumps(bounding_boxes) if bounding_boxes else None,
+#                         masks=json.dumps(masks) if masks else None
+#                     )
+#                     db.session.add(new_image_file)
+#                     print(f"✅ Image saved to database BLOB for Tray {tray_number}, Size: {image_size} bytes")
 
-                db.session.commit()
-                print(f"✅ Data saved to database for Tray {tray_number}")
+#                 db.session.commit()
+#                 print(f"✅ Data saved to database for Tray {tray_number}")
 
-            except Exception as e:
-                db.session.rollback()
-                print(f"❌ Error storing data to database: {e}")
-            finally:
-                db.session.remove()
+#             except Exception as e:
+#                 db.session.rollback()
+#                 print(f"❌ Error storing data to database: {e}")
+#             finally:
+#                 db.session.remove()
 
-    except json.JSONDecodeError:
-        print(f"Error: Could not decode JSON from message: {msg.payload.decode()}")
-    except Exception as e:
-        print(f"An unexpected error occurred in on_message: {e}")
+#     except json.JSONDecodeError:
+#         print(f"Error: Could not decode JSON from message: {msg.payload.decode()}")
+#     except Exception as e:
+#         print(f"An unexpected error occurred in on_message: {e}")
 
 
 @app.route('/', defaults={'path': ''})
@@ -670,105 +670,21 @@ def catch_all(path):
     return redirect(url_for('dashboard'))
 
 
-# --- MQTT Thread Function 
-def run_mqtt_subscriber():
-    # Assign the callbacks
-    mqtt_client.on_connect = on_connect
-    mqtt_client.on_message = on_message
+# # --- MQTT Thread Function 
+# def run_mqtt_subscriber():
+#     # Assign the callbacks
+#     mqtt_client.on_connect = on_connect
+#     mqtt_client.on_message = on_message
 
-    # Start the client loop
-    try:
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_forever() # This is a blocking call
-    except Exception as e:
-        print(f"Failed to connect to MQTT broker or loop error: {e}")
-    finally:
-        print("MQTT subscriber stopped.")
+#     # Start the client loop
+#     try:
+#         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+#         mqtt_client.loop_forever() # This is a blocking call
+#     except Exception as e:
+#         print(f"Failed to connect to MQTT broker or loop error: {e}")
+#     finally:
+#         print("MQTT subscriber stopped.")
 
-
-# # --- Main Execution Block ---
-# if __name__ == '__main__':
-#     # Initialize database and add dummy data within Flask app context
-#     with app.app_context():
-#         db.create_all() # Creates tables if they don't exist
-#         # Create test user if none exists
-#         if not User.query.filter_by(username='testuser').first():
-#             admin_user = User(username='testuser')
-#             admin_user.set_password('password')
-#             db.session.add(admin_user)
-#             db.session.commit()
-#             print("Test user 'testuser' with password 'password' created.")
-
-#         # # Optional: Add some dummy data for new trays if the database is empty
-#         # if not LarvaeData.query.first():
-#         #     print("Adding dummy data for demonstration.")
-#         #     from random import uniform, randint
-
-#         #     # Add data for tray 1
-#         #     for i in range(1, 10):
-#         #         timestamp = datetime.utcnow() - timedelta(days=9 - i)
-#         #         db.session.add(LarvaeData(
-#         #             tray_number=1,
-#         #             length=round(uniform(10, 20), 1),
-#         #             width=round(uniform(2, 4), 1),
-#         #             area=round(uniform(20, 80), 1),
-#         #             weight=round(uniform(90, 150), 1),
-#         #             count=randint(100, 500),
-#         #             timestamp=timestamp
-#         #         ))
-
-#         #     # Add data for tray 2
-#         #     for i in range(1, 8):
-#         #         timestamp = datetime.utcnow() - timedelta(days=7 - i)
-#         #         db.session.add(LarvaeData(
-#         #             tray_number=2,
-#         #             length=round(uniform(12, 22), 1),
-#         #             width=round(uniform(2.5, 4.5), 1),
-#         #             area=round(uniform(25, 90), 1),
-#         #             weight=round(uniform(95, 160), 1),
-#         #             count=randint(80, 400),
-#         #             timestamp=timestamp
-#         #         ))
-
-#         #     # Add data for tray 3
-#         #     for i in range(1, 12):
-#         #         timestamp = datetime.utcnow() - timedelta(days=11 - i)
-#         #         db.session.add(LarvaeData(
-#         #             tray_number=3,
-#         #             length=round(uniform(9, 18), 1),
-#         #             width=round(uniform(1.8, 3.8), 1),
-#         #             area=round(uniform(18, 70), 1),
-#         #             weight=round(uniform(85, 145), 1),
-#         #             count=randint(120, 600),
-#         #             timestamp=timestamp
-#         #         ))
-
-#         #     # Add dummy data for new trays (e.g., 156, 256, 356) to ensure they appear
-#         #     for tray in [156, 256, 356]:
-#         #         for i in range(1, 7):
-#         #             timestamp = datetime.utcnow() - timedelta(days=6 - i)
-#         #             db.session.add(LarvaeData(
-#         #                 tray_number=tray,
-#         #                 length=round(uniform(15, 25), 1),
-#         #                 width=round(uniform(3, 5), 1),
-#         #                 area=round(uniform(30, 100), 1),
-#         #                 weight=round(uniform(100, 180), 1),
-#         #                 count=randint(150, 700),
-#         #                 timestamp=timestamp
-#         #             ))
-#         #     db.session.commit()
-#         #     print("Dummy data added for demonstration including new trays.")
-
-#     # Start MQTT subscriber in a separate thread
-#     print("Starting MQTT subscriber thread...")
-#     mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
-#     mqtt_thread.daemon = True
-#     mqtt_thread.start()
-#     print("MQTT subscriber thread started.")
-
-#     # Start Flask app in the main thread
-#     print("Starting Flask application...")
-#     app.run(host='0.0.0.0', port=8000, debug=True, use_reloader=False)
 
 # --- Main Execution Block ---
 if __name__ == '__main__':
@@ -783,19 +699,19 @@ if __name__ == '__main__':
             db.session.commit()
             print("Test user 'testuser' with password 'password' created.")
 
-    # Debug MQTT startup
-    print("=== MQTT DEBUG ===")
-    print(f"RENDER environment: {os.environ.get('RENDER', 'Not set')}")
-    print("Starting MQTT thread...")
+    # # Debug MQTT startup
+    # print("=== MQTT DEBUG ===")
+    # print(f"RENDER environment: {os.environ.get('RENDER', 'Not set')}")
+    # print("Starting MQTT thread...")
     
-    try:
-        mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
-        mqtt_thread.daemon = True
-        mqtt_thread.start()
-        print("✅ MQTT thread started successfully")
-        print(f"MQTT thread alive: {mqtt_thread.is_alive()}")
-    except Exception as e:
-        print(f"❌ MQTT thread failed: {e}")
+    # try:
+    #     mqtt_thread = threading.Thread(target=run_mqtt_subscriber)
+    #     mqtt_thread.daemon = True
+    #     mqtt_thread.start()
+    #     print("✅ MQTT thread started successfully")
+    #     print(f"MQTT thread alive: {mqtt_thread.is_alive()}")
+    # except Exception as e:
+    #     print(f"❌ MQTT thread failed: {e}")
 
     # Get port from environment variable (Render provides this)
     port = int(os.environ.get('PORT', 8000))
