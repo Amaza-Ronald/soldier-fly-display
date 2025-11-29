@@ -1,3 +1,8 @@
+# from BSFwebdashboard import app
+
+# if __name__ == "__main__":
+#     app.run()
+
 from BSFwebdashboard import app
 
 if __name__ == "__main__":
