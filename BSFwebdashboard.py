@@ -542,7 +542,7 @@ def get_comparison_data():
 @login_required
 def dashboard():
     """Renders the main dashboard page."""
-    # Dynamically get all unique tray numbers from the database
+    # Dynamically get all unique tray numbers from database
     unique_tray_numbers_raw = LarvaeData.query.with_entities(LarvaeData.tray_number).distinct().all()
 
     # Convert list of tuples to a sorted list of integers
