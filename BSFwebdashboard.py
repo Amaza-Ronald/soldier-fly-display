@@ -202,26 +202,50 @@ def register():
 
     return render_template('register.html')
 
-# CHANGED: Add BLOB image serving routes like app.py
-@app.route('/image/<int:image_id>')
-@login_required
-def get_image(image_id):
-    """Serve image directly from database BLOB"""
-    try:
-        image_file = ImageFile.query.get_or_404(image_id)
+# # CHANGED: Add BLOB image serving routes like app.py
+# @app.route('/image/<int:image_id>')
+# @login_required
+# def get_image(image_id):
+#     """Serve image directly from database BLOB"""
+#     try:
+#         image_file = ImageFile.query.get_or_404(image_id)
         
-        # Return image with proper MIME type
-        return Response(
-            image_file.image_data,
-            mimetype=f'image/{image_file.image_format}',
-            headers={
-                'Content-Length': image_file.image_size,
-                'Cache-Control': 'public, max-age=3600'  # Cache for 1 hour
-            }
+#         # Return image with proper MIME type
+#         return Response(
+#             image_file.image_data,
+#             mimetype=f'image/{image_file.image_format}',
+#             headers={
+#                 'Content-Length': image_file.image_size,
+#                 'Cache-Control': 'public, max-age=3600'  # Cache for 1 hour
+#             }
+#         )
+#     except Exception as e:
+#         app.logger.error(f"Error serving image {image_id}: {e}")
+#         return jsonify({"error": "Image not found"}), 404
+
+
+@app.route('/image/<int:image_id>')
+def get_image(image_id):
+    try:
+        image_file = ImageFiles.query.get(image_id)
+        if not image_file:
+            return "Image not found", 404
+            
+        response = send_file(
+            BytesIO(image_file.image_data), 
+            mimetype=f'image/{image_file.image_format}'
         )
+        
+        # ADD CACHE HEADERS - Prevents multiple requests
+        response.headers['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
+        response.headers['Expires'] = (datetime.utcnow() + timedelta(hours=1)).strftime('%a, %d %b %Y %H:%M:%S GMT')
+        
+        return response
+        
     except Exception as e:
-        app.logger.error(f"Error serving image {image_id}: {e}")
-        return jsonify({"error": "Image not found"}), 404
+        print(f"Error loading image {image_id}: {str(e)}")
+        return "Error loading image", 500
+
 
 @app.route('/image_thumbnail/<int:image_id>')
 @login_required
@@ -458,6 +482,15 @@ def health_check():
         return {'status': 'healthy', 'database': 'connected'}, 200
     except Exception as e:
         return {'status': 'unhealthy', 'error': str(e)}, 500
+    
+# Add this route to debug stream clients
+@app.route('/debug/stream_clients')
+def debug_stream_clients():
+    return {
+        'total_clients': len(stream_clients),
+        'client_ids': list(stream_clients.keys()),
+        'queues_sizes': {client_id: q.qsize() for client_id, q in stream_clients.items()}
+    }
     
 
 @app.route('/get_combined_tray_data')
@@ -871,17 +904,30 @@ def on_message(client, userdata, msg):
                 db.session.commit()
                 print(f"✅ MQTT data saved for Tray {tray_number}")
 
-                # BROADCAST TO ALL STREAM CLIENTS - MAKE SURE THIS EXISTS
-        for client_id, q in list(stream_clients.items()):
-            try:
-                q.put(data, timeout=1)
-                print(f"✅ Sent to stream client {client_id}")
-            except queue.Full:
-                print(f"❌ Queue full for client {client_id}")
-            except Exception as e:
-                print(f"❌ Error sending to client {client_id}: {e}")
+                # BROADCAST UPDATE TO ALL CONNECTED CLIENTS
+                update_data = {
+                    'type': 'new_data',
+                    'tray_number': tray_number,
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'image_saved': image_saved,
+                    'metrics': {
+                        'length': data["length"],
+                        'width': data["width"],
+                        'area': data["area"],
+                        'weight': data["weight"],
+                        'count': data["count"]
+                    }
+                }
                 
-    
+                # BROADCAST TO ALL STREAM CLIENTS - MAKE SURE THIS EXISTS
+                for client_id, q in list(stream_clients.items()):
+                    try:
+                        q.put(data, timeout=1)
+                        print(f"✅ Sent to stream client {client_id}")
+                    except queue.Full:
+                        print(f"❌ Queue full for client {client_id}")
+                    except Exception as e:
+                        print(f"❌ Error sending to client {client_id}: {e}")
                 
                 # Broadcast to all connected clients
                 for client in connected_clients[:]:  # Use slice copy to avoid modification during iteration
