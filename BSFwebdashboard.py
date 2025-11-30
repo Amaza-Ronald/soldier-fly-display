@@ -645,7 +645,6 @@ def dashboard():
 # --- Server-Sent Events (SSE) for Real-Time Updates ---
 @app.route('/stream')
 def event_stream():
-    # Get client_id within the request context
     client_id = request.args.get('client_id')
     
     def generate():
@@ -664,7 +663,11 @@ def event_stream():
                 try:
                     # Reduced timeout from 30 to 15 seconds
                     data = client_queue.get(timeout=15)
-                    yield f"data: {data}\n\n"
+                    if data:  # Only yield if we have real data
+                        yield f"data: {data}\n\n"
+                    else:
+                        # Send heartbeat to keep connection alive
+                        yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
                 except queue.Empty:
                     # Send heartbeat to keep connection alive
                     yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
@@ -868,20 +871,17 @@ def on_message(client, userdata, msg):
                 db.session.commit()
                 print(f"✅ MQTT data saved for Tray {tray_number}")
 
-                # BROADCAST UPDATE TO ALL CONNECTED CLIENTS
-                update_data = {
-                    'type': 'new_data',
-                    'tray_number': tray_number,
-                    'timestamp': datetime.now(timezone.utc).isoformat(),
-                    'image_saved': image_saved,
-                    'metrics': {
-                        'length': data["length"],
-                        'width': data["width"],
-                        'area': data["area"],
-                        'weight': data["weight"],
-                        'count': data["count"]
-                    }
-                }
+                # BROADCAST TO ALL STREAM CLIENTS - MAKE SURE THIS EXISTS
+        for client_id, q in list(stream_clients.items()):
+            try:
+                q.put(data, timeout=1)
+                print(f"✅ Sent to stream client {client_id}")
+            except queue.Full:
+                print(f"❌ Queue full for client {client_id}")
+            except Exception as e:
+                print(f"❌ Error sending to client {client_id}: {e}")
+                
+    
                 
                 # Broadcast to all connected clients
                 for client in connected_clients[:]:  # Use slice copy to avoid modification during iteration
