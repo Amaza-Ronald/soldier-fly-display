@@ -645,9 +645,12 @@ def dashboard():
 # --- Server-Sent Events (SSE) for Real-Time Updates ---
 @app.route('/stream')
 def event_stream():
+    # Get client_id within the request context
+    client_id = request.args.get('client_id')
+    
     def generate():
-        client_id = request.args.get('client_id')
         if not client_id:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No client_id provided'})}\n\n"
             return
         
         client_queue = queue.Queue()
@@ -659,7 +662,7 @@ def event_stream():
             
             while True:
                 try:
-                    # REDUCED TIMEOUT from 30 to 15 seconds
+                    # Reduced timeout from 30 to 15 seconds
                     data = client_queue.get(timeout=15)
                     yield f"data: {data}\n\n"
                 except queue.Empty:
@@ -676,6 +679,13 @@ def event_stream():
                 stream_clients.pop(client_id)
     
     return Response(generate(), mimetype='text/event-stream')
+
+@app.errorhandler(RuntimeError)
+def handle_runtime_error(e):
+    if "working outside of request context" in str(e).lower():
+        print("Request context error - likely in stream endpoint")
+        return "Internal server error", 500
+    raise e
 
 @app.route('/logout')
 @login_required
