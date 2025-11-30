@@ -830,6 +830,59 @@
         to { transform: translateX(100%); opacity: 0; }
     }
 
+            /* ===== RESPONSIVE TRAY SELECTOR - ADD AT END OF CSS ===== */
+        .tray-dropdown-fallback {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .tray-dropdown {
+            padding: 12px 22px;
+            background-color: var(--card-bg);
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: var(--transition);
+            color: var(--text-dark);
+            min-width: 200px;
+        }
+
+        .tray-dropdown:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.2);
+        }
+
+        .tray-dropdown:hover {
+            border-color: var(--accent-color);
+        }
+
+        /* Hide buttons and show dropdown on mobile */
+        @media (max-width: 768px) {
+            .tray-selector {
+                display: none !important;
+            }
+            
+            .tray-dropdown-fallback {
+                display: flex !important;
+            }
+        }
+
+        /* Hide buttons and show dropdown when too many trays (desktop) */
+        @media (min-width: 769px) {
+            .tray-selector-many-trays {
+                display: none !important;
+            }
+            
+            .tray-dropdown-many-trays {
+                display: flex !important;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -849,6 +902,16 @@
             {% endfor %}
             <button class="tray-btn" data-tray-number="0">Combined Trays</button>
             <button class="tray-btn comparison-btn" data-tray-number="4">Compare All Trays</button>
+        </div>
+
+        <!-- ADD THIS AS A FALLBACK (initially hidden) -->
+        <div class="tray-dropdown-fallback" id="tray-dropdown-fallback" style="display: none; margin-bottom: 15px;">
+            <select id="tray-dropdown" class="tray-dropdown">
+                <option value="">Select a Tray...</option>
+                {% for tray_num, data in tray_data.items() %}
+                <option value="{{ tray_num }}">Tray #{{ tray_num }}</option>
+                {% endfor %}
+            </select>
         </div>
 
         <div class="chart-toggle-group">
@@ -937,6 +1000,40 @@
         let currentPage = 1;
         const imagesPerPage = 4;
 
+
+                // ===== RESPONSIVE TRAY SELECTOR FUNCTION =====
+        function setupResponsiveTraySelector() {
+            const traySelector = document.getElementById('tray-selector');
+            const dropdownFallback = document.getElementById('tray-dropdown-fallback');
+            const trayDropdown = document.getElementById('tray-dropdown');
+            
+            if (!traySelector || !dropdownFallback || !trayDropdown) {
+                console.log('Tray selector elements not found');
+                return;
+            }
+            
+            // Count how many tray buttons we have (excluding Combined and Compare)
+            const trayButtons = traySelector.querySelectorAll('.tray-btn[data-tray-number]:not([data-tray-number="0"]):not([data-tray-number="4"])');
+            
+            // Show dropdown instead of buttons if too many trays or on mobile
+            const isMobile = window.innerWidth <= 768;
+            const tooManyTrays = trayButtons.length > 6; // Switch if more than 6 trays
+            
+            if (isMobile || tooManyTrays) {
+                traySelector.style.display = 'none';
+                dropdownFallback.style.display = 'flex';
+                
+                // Add class for many trays on desktop
+                if (tooManyTrays && !isMobile) {
+                    traySelector.classList.add('tray-selector-many-trays');
+                    dropdownFallback.classList.add('tray-dropdown-many-trays');
+                }
+            } else {
+                traySelector.style.display = 'flex';
+                dropdownFallback.style.display = 'none';
+            }
+        }
+
     function generateTrayColors(trayNumbers) {
         const colors = {
             0: '#f39c12',
@@ -974,6 +1071,18 @@
                 });
             });
 
+                        // ===== DROPDOWN EVENT HANDLER =====
+            document.getElementById('tray-dropdown').addEventListener('change', function(event) {
+                const trayNumber = parseInt(event.target.value);
+                if (!isNaN(trayNumber)) {
+                    updateDashboard(trayNumber, currentChartMode);
+                    // Also update the active state on buttons
+                    document.querySelectorAll('.tray-btn').forEach(btn => {
+                        btn.classList.toggle('active', parseInt(btn.dataset.trayNumber) === trayNumber);
+                    });
+                }
+            });
+
             document.querySelectorAll('.chart-toggle-btn').forEach(button => {
                 button.addEventListener('click', () => {
                     const mode = button.dataset.chartMode;
@@ -981,14 +1090,14 @@
                 });
             });
 
+            setupResponsiveTraySelector();
+
             const initialTray = trayNumbers.length > 0 ? trayNumbers[0] : 0;
             updateDashboard(initialTray, currentChartMode);
 
             loadImages(); // Initial load of images
 
-            // ADD THESE EVENT LISTENERS FOR PAGINATION:
-            document.getElementById('prevBtn').addEventListener('click', previousPage);
-            document.getElementById('nextBtn').addEventListener('click', nextPage);
+
         });
 
         async function updateDashboard(trayNumber, chartMode = null) {
@@ -1778,6 +1887,7 @@ window.addEventListener('beforeunload', () => {
     }
 });
 
+window.addEventListener('resize', setupResponsiveTraySelector);
     </script>
 </body>
 </html>
