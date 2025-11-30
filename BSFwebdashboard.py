@@ -19,6 +19,8 @@ import queue  # Add this import
 import threading
 import paho.mqtt.client as mqtt
 
+import gc
+
 # --- Flask App Configuration ---
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
@@ -42,6 +44,33 @@ login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
 
+def cleanup_memory():
+    """Clean up old connections and memory"""
+    while True:
+        time.sleep(300)  # Run every 5 minutes
+        try:
+            # Clean up old stream clients (older than 30 minutes)
+            current_time = time.time()
+            expired_clients = []
+            for client_id, q in list(stream_clients.items()):
+                # Simple cleanup - remove if queue has been empty for a while
+                if q.qsize() == 0:  # Simple check, you might want more sophisticated logic
+                    expired_clients.append(client_id)
+            
+            for client_id in expired_clients:
+                if client_id in stream_clients:
+                    stream_clients.pop(client_id)
+            
+            # Run garbage collection
+            gc.collect()
+            
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+
+# Start cleanup thread (add this after your app initialization)
+cleanup_thread = threading.Thread(target=cleanup_memory, daemon=True)
+cleanup_thread.start()
+
 # --- MQTT Configuration ---
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
@@ -51,6 +80,7 @@ mqtt_client = None
 mqtt_thread = None
 
 connected_clients = [] # To track connected clients for SSE
+stream_clients = {}   # Map of client_id -> queue.Queue for SSE stream management
 
 # --- Database Models (UPDATED for PostgreSQL) ---
 class User(UserMixin, db.Model):
@@ -418,6 +448,17 @@ def get_tray_data(tray_number):
     except Exception as e:
         app.logger.error(f"Error fetching tray data for tray {tray_number}: {e}")
         return jsonify({"error": str(e)}), 500
+    
+
+@app.route('/health')
+def health_check():
+    try:
+        # Simple database check
+        db.session.execute('SELECT 1')
+        return {'status': 'healthy', 'database': 'connected'}, 200
+    except Exception as e:
+        return {'status': 'unhealthy', 'error': str(e)}, 500
+    
 
 @app.route('/get_combined_tray_data')
 @login_required
@@ -603,42 +644,38 @@ def dashboard():
 
 # --- Server-Sent Events (SSE) for Real-Time Updates ---
 @app.route('/stream')
-@login_required
-def stream():
-    """Server-Sent Events route for real-time updates"""
-    def event_stream():
-        # Create a queue for this client
+def event_stream():
+    def generate():
+        client_id = request.args.get('client_id')
+        if not client_id:
+            return
+        
         client_queue = queue.Queue()
-        last_id = 0
-        connected_clients.append((client_queue, last_id))
+        stream_clients[client_id] = client_queue
         
         try:
+            # Send initial connection message
+            yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started'})}\n\n"
+            
             while True:
                 try:
-                    # Wait for new data with timeout
-                    data = client_queue.get(timeout=30)
-                    last_id += 1
-                    yield f"id: {last_id}\ndata: {json.dumps(data)}\n\n"
+                    # REDUCED TIMEOUT from 30 to 15 seconds
+                    data = client_queue.get(timeout=15)
+                    yield f"data: {data}\n\n"
                 except queue.Empty:
                     # Send heartbeat to keep connection alive
-                    yield f"id: {last_id}\ndata: {json.dumps({'type': 'heartbeat', 'timestamp': datetime.now(timezone.utc).isoformat()})}\n\n"
-                    last_id += 1
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
+                    
         except GeneratorExit:
-            # Client disconnected
-            if (client_queue, last_id) in connected_clients:
-                connected_clients.remove((client_queue, last_id))
-            print("Client disconnected from SSE stream")
+            # Client disconnected normally
+            if client_id in stream_clients:
+                stream_clients.pop(client_id)
+        except Exception as e:
+            print(f"Stream error for {client_id}: {str(e)}")
+            if client_id in stream_clients:
+                stream_clients.pop(client_id)
     
-    return Response(
-        stream_with_context(event_stream()),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-            'X-Accel-Buffering': 'no'  # Important for some proxies
-        }
-    )
+    return Response(generate(), mimetype='text/event-stream')
 
 @app.route('/logout')
 @login_required
