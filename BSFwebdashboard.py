@@ -1,31 +1,4 @@
-# from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash, send_file, Response
-# from flask_sqlalchemy import SQLAlchemy
-# from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
-# from werkzeug.security import generate_password_hash, check_password_hash
-# from datetime import datetime, timedelta
-# from collections import defaultdict
-# import os
-# import threading # For running MQTT in a separate thread
-# import base64
-# from PIL import Image
-# from io import BytesIO
-# from random import uniform, randint
-
-# # MQTT specific imports
-# import paho.mqtt.client as mqtt
-# import json
-# import time # Although not heavily used, keep it if needed for future sleep operations
-
-# # --- Flask App Configuration ---
-# app = Flask(__name__, static_folder='static')
-# app.secret_key = os.urandom(24)
-# # Ensure this path matches the database path both parts will write to
-# app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///larvae_monitoring.db'
-# app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# db = SQLAlchemy(app)
-# login_manager = LoginManager(app)
-# login_manager.login_view = 'login'
+# BSFwebdashboard.py - Main Flask application for BSF Larvae Monitoring Dashboard
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash, send_file, Response
 from flask_sqlalchemy import SQLAlchemy
@@ -40,6 +13,8 @@ from io import BytesIO
 from random import uniform, randint
 import json
 import time
+from flask import Response, stream_with_context
+import queue  # Add this import
 
 import threading
 import paho.mqtt.client as mqtt
@@ -75,6 +50,7 @@ MQTT_TOPIC = "bsf_monitor/larvae_data"
 mqtt_client = None
 mqtt_thread = None
 
+connected_clients = [] # To track connected clients for SSE
 
 # --- Database Models (UPDATED for PostgreSQL) ---
 class User(UserMixin, db.Model):
@@ -337,6 +313,26 @@ def upload_image():
             
             db.session.add(new_image)
             db.session.commit()
+
+            # ✅ NEW: BROADCAST IMAGE UPLOAD TO ALL CONNECTED CLIENTS
+            update_data = {
+                'type': 'new_image',
+                'tray_number': tray_number,
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'image_id': new_image.id,
+                'count': count,
+                'avg_length': avg_length,
+                'avg_weight': avg_weight
+            }
+            
+            # Broadcast to all connected clients
+            for client in connected_clients[:]:
+                try:
+                    client_queue, last_id = client
+                    client_queue.put(update_data)
+                except Exception as e:
+                    print(f"❌ Error sending to client: {e}")
+                    connected_clients.remove(client)
             
             return jsonify({
                 "message": "Image saved to database successfully",
@@ -604,6 +600,46 @@ def dashboard():
 
     return render_template('dashboard.html', tray_data=tray_data_for_template)
 
+
+# --- Server-Sent Events (SSE) for Real-Time Updates ---
+@app.route('/stream')
+@login_required
+def stream():
+    """Server-Sent Events route for real-time updates"""
+    def event_stream():
+        # Create a queue for this client
+        client_queue = queue.Queue()
+        last_id = 0
+        connected_clients.append((client_queue, last_id))
+        
+        try:
+            while True:
+                try:
+                    # Wait for new data with timeout
+                    data = client_queue.get(timeout=30)
+                    last_id += 1
+                    yield f"id: {last_id}\ndata: {json.dumps(data)}\n\n"
+                except queue.Empty:
+                    # Send heartbeat to keep connection alive
+                    yield f"id: {last_id}\ndata: {json.dumps({'type': 'heartbeat', 'timestamp': datetime.now(timezone.utc).isoformat()})}\n\n"
+                    last_id += 1
+        except GeneratorExit:
+            # Client disconnected
+            if (client_queue, last_id) in connected_clients:
+                connected_clients.remove((client_queue, last_id))
+            print("Client disconnected from SSE stream")
+    
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+            'X-Accel-Buffering': 'no'  # Important for some proxies
+        }
+    )
+
 @app.route('/logout')
 @login_required
 def logout():
@@ -630,6 +666,88 @@ def on_connect(client, userdata, flags, rc, properties):
         print(f"Subscribed to topic: {MQTT_TOPIC}")
     else:
         print(f"❌ MQTT Connection failed: {rc}")
+
+# def on_message(client, userdata, msg):
+#     """Callback function for when an MQTT message is received."""
+#     print(f"📨 MQTT received message on {msg.topic}")
+#     try:
+#         data = json.loads(msg.payload.decode('utf-8'))
+        
+#         tray_number = data.get("tray_number")
+#         image_data_base64 = data.get("image_data_base64")
+#         bounding_boxes = data.get("bounding_boxes")
+#         masks = data.get("masks")
+
+#         # Validate incoming data
+#         required_keys = ["tray_number", "length", "width", "area", "weight", "count"]
+#         if not all(key in data for key in required_keys):
+#             print("❌ Missing required keys in MQTT message")
+#             return
+
+#         # Use Flask's app context
+#         with app.app_context():
+#             try:
+#                 # Save larvae data
+#                 new_entry = LarvaeData(
+#                     tray_number=data["tray_number"],
+#                     length=data["length"],
+#                     width=data["width"],
+#                     area=data["area"],
+#                     weight=data["weight"],
+#                     count=data["count"],
+#                     timestamp=datetime.now(timezone.utc)
+#                 )
+#                 db.session.add(new_entry)
+                
+#                 # Save image if present
+#                 if image_data_base64:
+#                     try:
+#                         image_bytes = base64.b64decode(image_data_base64)
+#                         img = Image.open(BytesIO(image_bytes))
+#                         image_format = img.format.lower() if img.format else 'jpeg'
+#                         image_size = len(image_bytes)
+                        
+#                         # Compress if too large
+#                         if image_size > 2 * 1024 * 1024:
+#                             output = BytesIO()
+#                             img.save(output, format='JPEG', quality=85, optimize=True)
+#                             image_bytes = output.getvalue()
+#                             image_size = len(image_bytes)
+#                             image_format = 'jpeg'
+                        
+#                         new_image_file = ImageFile(
+#                             tray_number=tray_number,
+#                             image_data=image_bytes,
+#                             image_format=image_format,
+#                             image_size=image_size,
+#                             avg_length=data.get('avg_length'),
+#                             avg_weight=data.get('avg_weight'),
+#                             count=data.get('count'),
+#                             bounding_boxes=json.dumps(bounding_boxes) if bounding_boxes else None,
+#                             masks=json.dumps(masks) if masks else None,
+#                             timestamp=datetime.now(timezone.utc)
+#                         )
+#                         db.session.add(new_image_file)
+#                         print(f"✅ Image saved via MQTT for Tray {tray_number}")
+                        
+#                     except Exception as img_error:
+#                         print(f"❌ Image processing error: {img_error}")
+#                         # Continue without image
+
+#                 db.session.commit()
+#                 print(f"✅ MQTT data saved for Tray {tray_number}")
+
+#             except Exception as e:
+#                 db.session.rollback()
+#                 print(f"❌ Database error in MQTT: {e}")
+#             finally:
+#                 db.session.remove()
+
+#     except json.JSONDecodeError:
+#         print(f"❌ JSON decode error in MQTT message")
+#     except Exception as e:
+#         print(f"❌ MQTT message processing error: {e}")
+
 
 def on_message(client, userdata, msg):
     """Callback function for when an MQTT message is received."""
@@ -664,6 +782,7 @@ def on_message(client, userdata, msg):
                 db.session.add(new_entry)
                 
                 # Save image if present
+                image_saved = False
                 if image_data_base64:
                     try:
                         image_bytes = base64.b64decode(image_data_base64)
@@ -692,6 +811,7 @@ def on_message(client, userdata, msg):
                             timestamp=datetime.now(timezone.utc)
                         )
                         db.session.add(new_image_file)
+                        image_saved = True
                         print(f"✅ Image saved via MQTT for Tray {tray_number}")
                         
                     except Exception as img_error:
@@ -700,6 +820,30 @@ def on_message(client, userdata, msg):
 
                 db.session.commit()
                 print(f"✅ MQTT data saved for Tray {tray_number}")
+
+                # BROADCAST UPDATE TO ALL CONNECTED CLIENTS
+                update_data = {
+                    'type': 'new_data',
+                    'tray_number': tray_number,
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'image_saved': image_saved,
+                    'metrics': {
+                        'length': data["length"],
+                        'width': data["width"],
+                        'area': data["area"],
+                        'weight': data["weight"],
+                        'count': data["count"]
+                    }
+                }
+                
+                # Broadcast to all connected clients
+                for client in connected_clients[:]:  # Use slice copy to avoid modification during iteration
+                    try:
+                        client_queue, last_id = client
+                        client_queue.put(update_data)
+                    except Exception as e:
+                        print(f"❌ Error sending to client: {e}")
+                        connected_clients.remove(client)
 
             except Exception as e:
                 db.session.rollback()
@@ -711,6 +855,7 @@ def on_message(client, userdata, msg):
         print(f"❌ JSON decode error in MQTT message")
     except Exception as e:
         print(f"❌ MQTT message processing error: {e}")
+
 
 def run_mqtt_subscriber():
     """Run MQTT subscriber with reconnection logic"""
