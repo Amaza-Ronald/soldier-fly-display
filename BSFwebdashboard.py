@@ -4,7 +4,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, s
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import os
 import base64
@@ -227,7 +227,7 @@ def register():
 @app.route('/image/<int:image_id>')
 def get_image(image_id):
     try:
-        image_file = ImageFiles.query.get(image_id)
+        image_file = ImageFile.query.get(image_id)
         if not image_file:
             return "Image not found", 404
             
