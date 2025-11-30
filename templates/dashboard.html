@@ -906,12 +906,17 @@
 
         <!-- ADD THIS AS A FALLBACK (initially hidden) -->
         <div class="tray-dropdown-fallback" id="tray-dropdown-fallback" style="display: none; margin-bottom: 15px;">
-            <select id="tray-dropdown" class="tray-dropdown">
-                <option value="">Select a Tray...</option>
-                {% for tray_num, data in tray_data.items() %}
-                <option value="{{ tray_num }}">Tray #{{ tray_num }}</option>
-                {% endfor %}
-            </select>
+            <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center;">
+                <select id="tray-dropdown" class="tray-dropdown">
+                    <option value="">Select a Tray...</option>
+                    {% for tray_num, data in tray_data.items() %}
+                    <option value="{{ tray_num }}">Tray #{{ tray_num }}</option>
+                    {% endfor %}
+                </select>
+                <!-- ADD THESE BUTTONS TO THE DROPDOWN CONTAINER -->
+                <button class="tray-btn" data-tray-number="0">Combined Trays</button>
+                <button class="tray-btn comparison-btn" data-tray-number="4">Compare All Trays</button>
+            </div>
         </div>
 
         <div class="chart-toggle-group">
