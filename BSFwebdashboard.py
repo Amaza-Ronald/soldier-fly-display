@@ -21,6 +21,7 @@ import paho.mqtt.client as mqtt
 
 import gc
 
+
 # --- Flask App Configuration ---
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
