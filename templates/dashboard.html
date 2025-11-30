@@ -830,8 +830,13 @@
         to { transform: translateX(100%); opacity: 0; }
     }
 
-            /* ===== RESPONSIVE TRAY SELECTOR - ADD AT END OF CSS ===== */
+        /* ===== RESPONSIVE TRAY SELECTOR - ADD AT END OF CSS ===== */
         .tray-dropdown-fallback {
+            display: none; /* Start hidden */
+            margin-bottom: 15px;
+        }
+
+        .tray-dropdown-fallback > div {
             display: flex;
             gap: 12px;
             align-items: center;
@@ -868,7 +873,7 @@
             }
             
             .tray-dropdown-fallback {
-                display: flex !important;
+                display: block !important;
             }
         }
 
@@ -879,7 +884,7 @@
             }
             
             .tray-dropdown-many-trays {
-                display: flex !important;
+                display: block !important;
             }
         }
 
@@ -1006,7 +1011,7 @@
         const imagesPerPage = 4;
 
 
-                // ===== RESPONSIVE TRAY SELECTOR FUNCTION =====
+                 // ===== FIXED RESPONSIVE TRAY SELECTOR FUNCTION =====
         function setupResponsiveTraySelector() {
             const traySelector = document.getElementById('tray-selector');
             const dropdownFallback = document.getElementById('tray-dropdown-fallback');
@@ -1026,7 +1031,7 @@
             
             if (isMobile || tooManyTrays) {
                 traySelector.style.display = 'none';
-                dropdownFallback.style.display = 'flex';
+                dropdownFallback.style.display = 'block';
                 
                 // Add class for many trays on desktop
                 if (tooManyTrays && !isMobile) {
@@ -1076,12 +1081,12 @@
                 });
             });
 
-                        // ===== DROPDOWN EVENT HANDLER =====
+                            // ===== DROPDOWN EVENT HANDLER =====
             document.getElementById('tray-dropdown').addEventListener('change', function(event) {
                 const trayNumber = parseInt(event.target.value);
                 if (!isNaN(trayNumber)) {
                     updateDashboard(trayNumber, currentChartMode);
-                    // Also update the active state on buttons
+                    // Also update the active state on ALL buttons (both in original selector and dropdown)
                     document.querySelectorAll('.tray-btn').forEach(btn => {
                         btn.classList.toggle('active', parseInt(btn.dataset.trayNumber) === trayNumber);
                     });
