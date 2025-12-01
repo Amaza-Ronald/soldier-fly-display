@@ -10,3 +10,26 @@ services:
         value: "postgresql://bsf_user:dQ5VfLVw3eLsp9aYSw01Eyn7gxu3GDDx@dpg-d4lg6ha4d50c73e2llq0-a.oregon-postgres.render.com/bsf_larvae"
       - key: PYTHON_VERSION
         value: 3.11.0
+# services:
+#   - type: web
+#     name: bsf-larvae-monitoring
+#     env: python
+#     plan: free
+#     # CHANGED: Only run init_db.py if it's the first deploy
+#     buildCommand: |
+#       if [ ! -f .database_initialized ]; then
+#         echo "First deploy - initializing database..."
+#         pip install -r requirements.txt
+#         python init_db.py && touch .database_initialized || echo "Database init completed (with possible warnings)"
+#       else
+#         echo "Database already initialized - skipping init_db.py"
+#         pip install -r requirements.txt
+#       fi
+#     startCommand: gunicorn BSFwebdashboard:app --workers=2 --threads=4 --worker-class=gthread --timeout 120
+#     envVars:
+#       - key: DATABASE_URL
+#         value: "postgresql://bsf_user:dQ5VfLVw3eLsp9aYSw01Eyn7gxu3GDDx@dpg-d4lg6ha4d50c73e2llq0-a.oregon-postgres.render.com/bsf_larvae"
+#       - key: PYTHON_VERSION
+#         value: 3.11.0
+#       - key: FLASK_DEBUG
+#         value: "false"
