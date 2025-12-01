@@ -296,24 +296,82 @@ def get_image_thumbnail(image_id):
         app.logger.error(f"Error serving thumbnail {image_id}: {e}")
         return jsonify({"error": "Thumbnail not found"}), 404
 
-# CHANGED: Updated image API to work with BLOB storage
+# # CHANGED: Updated image API to work with BLOB storage
+# @app.route('/api/images/<tray_number>')
+# @login_required
+# def get_images(tray_number):
+#     """Get images from database with BLOB data converted to URLs"""
+#     try:
+#         if tray_number == 'all':
+#             images = ImageFile.query.order_by(ImageFile.timestamp.desc()).all()
+#         else:
+#             images = ImageFile.query.filter_by(tray_number=int(tray_number)).order_by(ImageFile.timestamp.desc()).all()
+        
+#         image_list = []
+#         for img in images: 
+#             image_list.append({
+#                 "id": img.id,
+#                 "tray": img.tray_number,
+#                 "src": url_for('get_image', image_id=img.id),  # Use BLOB route
+#                 "thumbnail": url_for('get_image_thumbnail', image_id=img.id),  # Thumbnail URL
+#                 "timestamp": img.timestamp.isoformat(),
+#                 "count": img.count,
+#                 "avgLength": img.avg_length,
+#                 "avgWeight": img.avg_weight,
+#                 "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
+#                 "masks": json.loads(img.masks) if img.masks else [],
+#                 "size": img.image_size,
+#                 "format": img.image_format
+#             })
+#         return jsonify(image_list)
+#     except Exception as e:
+#         print(f"Error fetching images: {e}")
+#         return jsonify([])
+
 @app.route('/api/images/<tray_number>')
 @login_required
 def get_images(tray_number):
-    """Get images from database with BLOB data converted to URLs"""
+    """Get images from database - OPTIMIZED VERSION"""
     try:
+        # Add query optimization
+        from sqlalchemy.orm import load_only
+        
+        # Select only the columns we need
+        query = ImageFile.query.options(
+            load_only(
+                ImageFile.id,
+                ImageFile.tray_number,
+                ImageFile.image_data,  # Keep this for base64 fallback
+                ImageFile.image_format,
+                ImageFile.timestamp,
+                ImageFile.count,
+                ImageFile.avg_length,
+                ImageFile.avg_weight,
+                ImageFile.bounding_boxes,
+                ImageFile.masks,
+                ImageFile.image_size
+            )
+        )
+        
         if tray_number == 'all':
-            images = ImageFile.query.order_by(ImageFile.timestamp.desc()).all()
+            images = query.order_by(ImageFile.timestamp.desc()).limit(20).all()
         else:
-            images = ImageFile.query.filter_by(tray_number=int(tray_number)).order_by(ImageFile.timestamp.desc()).all()
+            images = query.filter_by(tray_number=int(tray_number))\
+                         .order_by(ImageFile.timestamp.desc())\
+                         .limit(20).all()
         
         image_list = []
         for img in images: 
+            # KEEP BOTH: URL for compatibility AND base64 for performance
+            image_url = url_for('get_image', image_id=img.id)
+            thumbnail_url = url_for('get_image_thumbnail', image_id=img.id)
+            
             image_list.append({
                 "id": img.id,
                 "tray": img.tray_number,
-                "src": url_for('get_image', image_id=img.id),  # Use BLOB route
-                "thumbnail": url_for('get_image_thumbnail', image_id=img.id),  # Thumbnail URL
+                "src": image_url,  # Keep original URL for compatibility
+                "src_base64": None,  # Optional: add later if needed
+                "thumbnail": thumbnail_url,
                 "timestamp": img.timestamp.isoformat(),
                 "count": img.count,
                 "avgLength": img.avg_length,
@@ -327,6 +385,8 @@ def get_images(tray_number):
     except Exception as e:
         print(f"Error fetching images: {e}")
         return jsonify([])
+
+
 
 # Add this route to your existing Flask routes
 
