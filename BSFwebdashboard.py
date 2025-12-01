@@ -975,35 +975,48 @@ def dashboard():
 
 @app.route('/stream')
 def event_stream():
-    """Memory-safe Server-Sent Events endpoint"""
+    """Memory-safe Server-Sent Events endpoint - NON-BLOCKING VERSION"""
     # Generate a unique client ID
     client_id = request.args.get('client_id', f"client_{uuid.uuid4().hex[:8]}_{int(time.time())}")
     
     def generate():
-        # Get a bounded queue from the client manager (prevents memory bloat)
+        # Get a bounded queue from the client manager
         client_queue = client_manager.add_client(client_id)
         
         try:
             # Send initial connection message
             yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started', 'client_id': client_id})}\n\n"
             
-            # Keep track of last activity
+            # Use a short timeout to prevent gunicorn worker blocking
+            heartbeat_interval = 25  # Render timeout is 30 seconds, use 25 to be safe
             last_heartbeat = time.time()
+            last_data_sent = time.time()
             
             while True:
                 try:
-                    # Check for new data with timeout
+                    # NON-BLOCKING: Check for data with very short timeout
                     try:
-                        data = client_queue.get(timeout=10.0)  # 10 second timeout
+                        # Use get_nowait() or very short timeout to avoid blocking workers
+                        data = client_queue.get_nowait()  # NON-BLOCKING
                         yield f"data: {json.dumps(data)}\n\n"
+                        last_data_sent = time.time()
                         last_heartbeat = time.time()
+                        continue
                     except queue.Empty:
-                        # No data, send heartbeat every 30 seconds
-                        if time.time() - last_heartbeat > 30:
-                            yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
-                            last_heartbeat = time.time()
-                            
-                except (GeneratorExit, BrokenPipeError):
+                        # No data available - continue to heartbeat check
+                        pass
+                    
+                    # Send heartbeat to keep connection alive and prevent timeouts
+                    current_time = time.time()
+                    if current_time - last_heartbeat > heartbeat_interval:
+                        yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
+                        last_heartbeat = current_time
+                    
+                    # Small sleep to prevent CPU spinning but keep connection responsive
+                    # This yields control back to event loop
+                    time.sleep(0.1)  # 100ms sleep
+                    
+                except (GeneratorExit, BrokenPipeError, ConnectionResetError):
                     # Client disconnected normally
                     break
                 except Exception as e:
@@ -1019,7 +1032,6 @@ def event_stream():
         mimetype='text/event-stream',
         headers={
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
             'X-Accel-Buffering': 'no',
             'Content-Type': 'text/event-stream; charset=utf-8'
         }
