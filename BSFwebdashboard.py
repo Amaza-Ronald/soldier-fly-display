@@ -83,6 +83,26 @@ mqtt_thread = None
 connected_clients = [] # To track connected clients for SSE
 stream_clients = {}   # Map of client_id -> queue.Queue for SSE stream management
 
+# Add this function right after the stream_clients definition:
+def broadcast_to_clients(data):
+    """Broadcast data to all connected SSE clients"""
+    disconnected_clients = []
+    
+    for client_id, q in list(stream_clients.items()):
+        try:
+            q.put(data, timeout=2)
+            print(f"📤 Sent to client {client_id}: {data.get('type', 'unknown')}")
+        except queue.Full:
+            print(f"⚠️ Queue full for client {client_id}")
+        except Exception as e:
+            print(f"❌ Error sending to client {client_id}: {e}")
+            disconnected_clients.append(client_id)
+    
+    # Clean up disconnected clients
+    for client_id in disconnected_clients:
+        if client_id in stream_clients:
+            stream_clients.pop(client_id)
+
 # --- Database Models (UPDATED for PostgreSQL) ---
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -369,6 +389,34 @@ def upload_image():
             db.session.add(new_image)
             db.session.commit()
 
+            # # ✅ NEW: BROADCAST IMAGE UPLOAD TO ALL CONNECTED CLIENTS
+            # update_data = {
+            #     'type': 'new_image',
+            #     'tray_number': tray_number,
+            #     'timestamp': datetime.now(timezone.utc).isoformat(),
+            #     'image_id': new_image.id,
+            #     'count': count,
+            #     'avg_length': avg_length,
+            #     'avg_weight': avg_weight
+            # }
+            
+            # # Broadcast to all connected clients
+            # for client in connected_clients[:]:
+            #     try:
+            #         client_queue, last_id = client
+            #         client_queue.put(update_data)
+            #     except Exception as e:
+            #         print(f"❌ Error sending to client: {e}")
+            #         connected_clients.remove(client)
+            
+            # return jsonify({
+            #     "message": "Image saved to database successfully",
+            #     "image_id": new_image.id,
+            #     "size": image_size,
+            #     "tray_number": tray_number
+            # }), 200
+
+
             # ✅ NEW: BROADCAST IMAGE UPLOAD TO ALL CONNECTED CLIENTS
             update_data = {
                 'type': 'new_image',
@@ -380,14 +428,8 @@ def upload_image():
                 'avg_weight': avg_weight
             }
             
-            # Broadcast to all connected clients
-            for client in connected_clients[:]:
-                try:
-                    client_queue, last_id = client
-                    client_queue.put(update_data)
-                except Exception as e:
-                    print(f"❌ Error sending to client: {e}")
-                    connected_clients.remove(client)
+            # Broadcast to all connected clients using broadcast_to_clients function
+            broadcast_to_clients(update_data)
             
             return jsonify({
                 "message": "Image saved to database successfully",
@@ -677,45 +719,72 @@ def dashboard():
 
 
 # --- Server-Sent Events (SSE) for Real-Time Updates ---
+# --- Server-Sent Events (SSE) for Real-Time Updates ---
 @app.route('/stream')
 def event_stream():
-    client_id = request.args.get('client_id')
+    client_id = request.args.get('client_id', str(time.time()))
     
     def generate():
-        if not client_id:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'No client_id provided'})}\n\n"
-            return
+        # Create a new queue for this client
+        q = queue.Queue()
+        stream_clients[client_id] = q
         
-        client_queue = queue.Queue()
-        stream_clients[client_id] = client_queue
+        print(f"🎯 New SSE client connected: {client_id}")
         
         try:
             # Send initial connection message
-            yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started'})}\n\n"
+            yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started', 'client_id': client_id})}\n\n"
             
             while True:
                 try:
-                    # Reduced timeout from 30 to 15 seconds
-                    data = client_queue.get(timeout=15)
-                    if data:  # Only yield if we have real data
-                        yield f"data: {data}\n\n"
-                    else:
-                        # Send heartbeat to keep connection alive
-                        yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
+                    # Wait for messages with timeout
+                    data = q.get(timeout=15)
+                    if data:
+                        yield f"data: {json.dumps(data)}\n\n"
                 except queue.Empty:
                     # Send heartbeat to keep connection alive
                     yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
                     
         except GeneratorExit:
-            # Client disconnected normally
-            if client_id in stream_clients:
-                stream_clients.pop(client_id)
+            # Client disconnected
+            print(f"🎯 Client disconnected: {client_id}")
         except Exception as e:
-            print(f"Stream error for {client_id}: {str(e)}")
+            print(f"🎯 Stream error for {client_id}: {str(e)}")
+        finally:
+            # Clean up
             if client_id in stream_clients:
                 stream_clients.pop(client_id)
+                print(f"🎯 Removed client {client_id}")
     
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        }
+    )
+
+# Helper function to broadcast to all SSE clients
+def broadcast_to_clients(data):
+    """Broadcast data to all connected SSE clients"""
+    disconnected_clients = []
+    
+    for client_id, q in list(stream_clients.items()):
+        try:
+            q.put(data, timeout=2)
+            print(f"📤 Sent to client {client_id}: {data.get('type', 'unknown')}")
+        except queue.Full:
+            print(f"⚠️ Queue full for client {client_id}")
+        except Exception as e:
+            print(f"❌ Error sending to client {client_id}: {e}")
+            disconnected_clients.append(client_id)
+    
+    # Clean up disconnected clients
+    for client_id in disconnected_clients:
+        if client_id in stream_clients:
+            stream_clients.pop(client_id)
 
 @app.errorhandler(RuntimeError)
 def handle_runtime_error(e):
@@ -833,6 +902,124 @@ def on_connect(client, userdata, flags, rc, properties):
 #         print(f"❌ MQTT message processing error: {e}")
 
 
+# def on_message(client, userdata, msg):
+#     """Callback function for when an MQTT message is received."""
+#     print(f"📨 MQTT received message on {msg.topic}")
+#     try:
+#         data = json.loads(msg.payload.decode('utf-8'))
+        
+#         tray_number = data.get("tray_number")
+#         image_data_base64 = data.get("image_data_base64")
+#         bounding_boxes = data.get("bounding_boxes")
+#         masks = data.get("masks")
+
+#         # Validate incoming data
+#         required_keys = ["tray_number", "length", "width", "area", "weight", "count"]
+#         if not all(key in data for key in required_keys):
+#             print("❌ Missing required keys in MQTT message")
+#             return
+
+#         # Use Flask's app context
+#         with app.app_context():
+#             try:
+#                 # Save larvae data
+#                 new_entry = LarvaeData(
+#                     tray_number=data["tray_number"],
+#                     length=data["length"],
+#                     width=data["width"],
+#                     area=data["area"],
+#                     weight=data["weight"],
+#                     count=data["count"],
+#                     timestamp=datetime.now(timezone.utc)
+#                 )
+#                 db.session.add(new_entry)
+                
+#                 # Save image if present
+#                 image_saved = False
+#                 if image_data_base64:
+#                     try:
+#                         image_bytes = base64.b64decode(image_data_base64)
+#                         img = Image.open(BytesIO(image_bytes))
+#                         image_format = img.format.lower() if img.format else 'jpeg'
+#                         image_size = len(image_bytes)
+                        
+#                         # Compress if too large
+#                         if image_size > 2 * 1024 * 1024:
+#                             output = BytesIO()
+#                             img.save(output, format='JPEG', quality=85, optimize=True)
+#                             image_bytes = output.getvalue()
+#                             image_size = len(image_bytes)
+#                             image_format = 'jpeg'
+                        
+#                         new_image_file = ImageFile(
+#                             tray_number=tray_number,
+#                             image_data=image_bytes,
+#                             image_format=image_format,
+#                             image_size=image_size,
+#                             avg_length=data.get('avg_length'),
+#                             avg_weight=data.get('avg_weight'),
+#                             count=data.get('count'),
+#                             bounding_boxes=json.dumps(bounding_boxes) if bounding_boxes else None,
+#                             masks=json.dumps(masks) if masks else None,
+#                             timestamp=datetime.now(timezone.utc)
+#                         )
+#                         db.session.add(new_image_file)
+#                         image_saved = True
+#                         print(f"✅ Image saved via MQTT for Tray {tray_number}")
+                        
+#                     except Exception as img_error:
+#                         print(f"❌ Image processing error: {img_error}")
+#                         # Continue without image
+
+#                 db.session.commit()
+#                 print(f"✅ MQTT data saved for Tray {tray_number}")
+
+#                 # BROADCAST UPDATE TO ALL CONNECTED CLIENTS
+#                 update_data = {
+#                     'type': 'new_data',
+#                     'tray_number': tray_number,
+#                     'timestamp': datetime.now(timezone.utc).isoformat(),
+#                     'image_saved': image_saved,
+#                     'metrics': {
+#                         'length': data["length"],
+#                         'width': data["width"],
+#                         'area': data["area"],
+#                         'weight': data["weight"],
+#                         'count': data["count"]
+#                     }
+#                 }
+                
+#                 # BROADCAST TO ALL STREAM CLIENTS - MAKE SURE THIS EXISTS
+#                 for client_id, q in list(stream_clients.items()):
+#                     try:
+#                         q.put(data, timeout=1)
+#                         print(f"✅ Sent to stream client {client_id}")
+#                     except queue.Full:
+#                         print(f"❌ Queue full for client {client_id}")
+#                     except Exception as e:
+#                         print(f"❌ Error sending to client {client_id}: {e}")
+                
+#                 # Broadcast to all connected clients
+#                 for client in connected_clients[:]:  # Use slice copy to avoid modification during iteration
+#                     try:
+#                         client_queue, last_id = client
+#                         client_queue.put(update_data)
+#                     except Exception as e:
+#                         print(f"❌ Error sending to client: {e}")
+#                         connected_clients.remove(client)
+
+#             except Exception as e:
+#                 db.session.rollback()
+#                 print(f"❌ Database error in MQTT: {e}")
+#             finally:
+#                 db.session.remove()
+
+#     except json.JSONDecodeError:
+#         print(f"❌ JSON decode error in MQTT message")
+#     except Exception as e:
+#         print(f"❌ MQTT message processing error: {e}")
+
+
 def on_message(client, userdata, msg):
     """Callback function for when an MQTT message is received."""
     print(f"📨 MQTT received message on {msg.topic}")
@@ -905,7 +1092,7 @@ def on_message(client, userdata, msg):
                 db.session.commit()
                 print(f"✅ MQTT data saved for Tray {tray_number}")
 
-                # BROADCAST UPDATE TO ALL CONNECTED CLIENTS
+                # BROADCAST UPDATE TO ALL SSE CLIENTS
                 update_data = {
                     'type': 'new_data',
                     'tray_number': tray_number,
@@ -920,24 +1107,8 @@ def on_message(client, userdata, msg):
                     }
                 }
                 
-                # BROADCAST TO ALL STREAM CLIENTS - MAKE SURE THIS EXISTS
-                for client_id, q in list(stream_clients.items()):
-                    try:
-                        q.put(data, timeout=1)
-                        print(f"✅ Sent to stream client {client_id}")
-                    except queue.Full:
-                        print(f"❌ Queue full for client {client_id}")
-                    except Exception as e:
-                        print(f"❌ Error sending to client {client_id}: {e}")
-                
                 # Broadcast to all connected clients
-                for client in connected_clients[:]:  # Use slice copy to avoid modification during iteration
-                    try:
-                        client_queue, last_id = client
-                        client_queue.put(update_data)
-                    except Exception as e:
-                        print(f"❌ Error sending to client: {e}")
-                        connected_clients.remove(client)
+                broadcast_to_clients(update_data)
 
             except Exception as e:
                 db.session.rollback()
