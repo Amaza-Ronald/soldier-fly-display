@@ -20,7 +20,28 @@ import threading
 import paho.mqtt.client as mqtt
 
 import gc
+import uuid
+import collections
+from collections import OrderedDict
 
+
+# # --- Flask App Configuration ---
+# app = Flask(__name__, static_folder='static')
+# app.secret_key = os.urandom(24)
+
+# # PostgreSQL Database Configuration
+# database_url = os.environ.get('DATABASE_URL', 'sqlite:///larvae_monitoring.db')
+
+# # Fix for Render PostgreSQL URL format
+# if database_url and database_url.startswith('postgres://'):
+#     database_url = database_url.replace('postgres://', 'postgresql://', 1)
+
+# app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+# app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+#     'pool_recycle': 300,
+#     'pool_pre_ping': True
+# }
 
 # --- Flask App Configuration ---
 app = Flask(__name__, static_folder='static')
@@ -36,37 +57,61 @@ if database_url and database_url.startswith('postgres://'):
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    'pool_recycle': 300,
-    'pool_pre_ping': True
+    'pool_size': 5,           # Smaller pool for Render free tier
+    'max_overflow': 10,       # Maximum overflow connections
+    'pool_recycle': 300,      # Recycle connections after 5 minutes
+    'pool_pre_ping': True,    # Verify connections before use
+    'pool_timeout': 30        # Timeout for getting connection
 }
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False  # Reduce JSON size
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
+
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
 
+# def cleanup_memory():
+#     """Clean up old connections and memory"""
+#     while True:
+#         time.sleep(300)  # Run every 5 minutes
+#         try:
+#             # Clean up old stream clients (older than 30 minutes)
+#             current_time = time.time()
+#             expired_clients = []
+#             for client_id, q in list(stream_clients.items()):
+#                 # Simple cleanup - remove if queue has been empty for a while
+#                 if q.qsize() == 0:  # Simple check, you might want more sophisticated logic
+#                     expired_clients.append(client_id)
+            
+#             for client_id in expired_clients:
+#                 if client_id in stream_clients:
+#                     stream_clients.pop(client_id)
+            
+#             # Run garbage collection
+#             gc.collect()
+            
+#         except Exception as e:
+#             print(f"Cleanup error: {e}")
+
 def cleanup_memory():
-    """Clean up old connections and memory"""
+    """Memory cleanup with aggressive garbage collection for Render"""
     while True:
-        time.sleep(300)  # Run every 5 minutes
+        time.sleep(60)  # Run every 1 minute (more aggressive)
         try:
-            # Clean up old stream clients (older than 30 minutes)
-            current_time = time.time()
-            expired_clients = []
-            for client_id, q in list(stream_clients.items()):
-                # Simple cleanup - remove if queue has been empty for a while
-                if q.qsize() == 0:  # Simple check, you might want more sophisticated logic
-                    expired_clients.append(client_id)
+            # Clean up inactive SSE clients
+            removed = client_manager.cleanup_inactive(max_age_seconds=120)
             
-            for client_id in expired_clients:
-                if client_id in stream_clients:
-                    stream_clients.pop(client_id)
-            
-            # Run garbage collection
+            # Aggressive garbage collection
             gc.collect()
             
+            if removed:
+                print(f"🧹 Memory cleanup: removed {len(removed)} clients")
+            
         except Exception as e:
-            print(f"Cleanup error: {e}")
+            print(f"⚠️ Cleanup error: {e}")
+            
 
 # Start cleanup thread (add this after your app initialization)
 cleanup_thread = threading.Thread(target=cleanup_memory, daemon=True)
@@ -80,28 +125,118 @@ MQTT_TOPIC = "bsf_monitor/larvae_data"
 mqtt_client = None
 mqtt_thread = None
 
-connected_clients = [] # To track connected clients for SSE
-stream_clients = {}   # Map of client_id -> queue.Queue for SSE stream management
+# connected_clients = [] # To track connected clients for SSE
+# stream_clients = {}   # Map of client_id -> queue.Queue for SSE stream management
 
-# Add this function right after the stream_clients definition:
+# # Add this function right after the stream_clients definition:
+# def broadcast_to_clients(data):
+#     """Broadcast data to all connected SSE clients"""
+#     disconnected_clients = []
+    
+#     for client_id, q in list(stream_clients.items()):
+#         try:
+#             q.put(data, timeout=2)
+#             print(f"📤 Sent to client {client_id}: {data.get('type', 'unknown')}")
+#         except queue.Full:
+#             print(f"⚠️ Queue full for client {client_id}")
+#         except Exception as e:
+#             print(f"❌ Error sending to client {client_id}: {e}")
+#             disconnected_clients.append(client_id)
+    
+#     # Clean up disconnected clients
+#     for client_id in disconnected_clients:
+#         if client_id in stream_clients:
+#             stream_clients.pop(client_id)
+
+
+# --- Thread-safe SSE Client Management ---
+class ClientManager:
+    """Thread-safe manager for SSE clients to prevent memory leaks"""
+    def __init__(self):
+        self.clients = OrderedDict()
+        self.lock = threading.Lock()
+        self.max_clients = 50  # Prevent memory exhaustion
+        self.max_queue_size = 10  # Prevent queue memory bloat
+    
+    def add_client(self, client_id):
+        """Add a new client with a bounded queue"""
+        with self.lock:
+            if len(self.clients) >= self.max_clients:
+                # Remove oldest client to prevent memory exhaustion
+                oldest_id = next(iter(self.clients))
+                self.clients.pop(oldest_id, None)
+                print(f"🧹 Removed oldest client {oldest_id} to prevent memory overflow")
+            
+            client_queue = queue.Queue(maxsize=self.max_queue_size)
+            self.clients[client_id] = {
+                'queue': client_queue,
+                'created': time.time(),
+                'last_active': time.time()
+            }
+            print(f"✅ Added client {client_id}, total: {len(self.clients)}")
+            return client_queue
+    
+    def remove_client(self, client_id):
+        """Remove a client"""
+        with self.lock:
+            if client_id in self.clients:
+                self.clients.pop(client_id, None)
+                print(f"✅ Removed client {client_id}, remaining: {len(self.clients)}")
+    
+    def broadcast(self, data):
+        """Broadcast data to all clients - thread-safe with timeout"""
+        disconnected = []
+        
+        with self.lock:
+            clients_copy = list(self.clients.items())
+        
+        for client_id, client_info in clients_copy:
+            try:
+                # Use put_nowait with bounded queue to prevent memory bloat
+                client_info['queue'].put_nowait(data)
+                client_info['last_active'] = time.time()
+            except queue.Full:
+                # Queue is full - client is not reading fast enough, remove it
+                print(f"⚠️ Queue full for client {client_id}, removing")
+                disconnected.append(client_id)
+            except Exception as e:
+                print(f"❌ Error sending to client {client_id}: {e}")
+                disconnected.append(client_id)
+        
+        # Clean up disconnected clients
+        for client_id in disconnected:
+            self.remove_client(client_id)
+        
+        return len(clients_copy) - len(disconnected)
+    
+    def cleanup_inactive(self, max_age_seconds=120):
+        """Remove inactive clients (older than max_age_seconds)"""
+        current_time = time.time()
+        removed = []
+        
+        with self.lock:
+            to_remove = []
+            for client_id, client_info in list(self.clients.items()):
+                if current_time - client_info['last_active'] > max_age_seconds:
+                    to_remove.append(client_id)
+            
+            for client_id in to_remove:
+                self.clients.pop(client_id, None)
+                removed.append(client_id)
+        
+        if removed:
+            print(f"🧹 Cleaned up {len(removed)} inactive clients")
+        return removed
+
+# Initialize the thread-safe client manager
+client_manager = ClientManager()
+
+# Keep broadcast_to_clients for backward compatibility
 def broadcast_to_clients(data):
-    """Broadcast data to all connected SSE clients"""
-    disconnected_clients = []
-    
-    for client_id, q in list(stream_clients.items()):
-        try:
-            q.put(data, timeout=2)
-            print(f"📤 Sent to client {client_id}: {data.get('type', 'unknown')}")
-        except queue.Full:
-            print(f"⚠️ Queue full for client {client_id}")
-        except Exception as e:
-            print(f"❌ Error sending to client {client_id}: {e}")
-            disconnected_clients.append(client_id)
-    
-    # Clean up disconnected clients
-    for client_id in disconnected_clients:
-        if client_id in stream_clients:
-            stream_clients.pop(client_id)
+    """Legacy function - use client_manager.broadcast instead"""
+    return client_manager.broadcast(data)
+
+
 
 # --- Database Models (UPDATED for PostgreSQL) ---
 class User(UserMixin, db.Model):
@@ -589,10 +724,22 @@ def health_check():
 # Add this route to debug stream clients
 @app.route('/debug/stream_clients')
 def debug_stream_clients():
+    """Debug endpoint to monitor SSE clients"""
+    client_info = {}
+    
+    with client_manager.lock:
+        for client_id, info in client_manager.clients.items():
+            client_info[client_id] = {
+                'queue_size': info['queue'].qsize(),
+                'created': info['created'],
+                'last_active': info['last_active'],
+                'age_seconds': time.time() - info['created']
+            }
+    
     return {
-        'total_clients': len(stream_clients),
-        'client_ids': list(stream_clients.keys()),
-        'queues_sizes': {client_id: q.qsize() for client_id, q in stream_clients.items()}
+        'total_clients': len(client_manager.clients),
+        'max_clients': client_manager.max_clients,
+        'clients': client_info
     }
     
 
@@ -780,41 +927,92 @@ def dashboard():
 
 # --- Server-Sent Events (SSE) for Real-Time Updates ---
 # --- Server-Sent Events (SSE) for Real-Time Updates ---
+# @app.route('/stream')
+# def event_stream():
+#     client_id = request.args.get('client_id', str(time.time()))
+    
+#     def generate():
+#         # Create a new queue for this client
+#         q = queue.Queue()
+#         stream_clients[client_id] = q
+        
+#         print(f"🎯 New SSE client connected: {client_id}")
+        
+#         try:
+#             # Send initial connection message
+#             yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started', 'client_id': client_id})}\n\n"
+            
+#             while True:
+#                 try:
+#                     # Wait for messages with timeout
+#                     data = q.get(timeout=15)
+#                     if data:
+#                         yield f"data: {json.dumps(data)}\n\n"
+#                 except queue.Empty:
+#                     # Send heartbeat to keep connection alive
+#                     yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
+                    
+#         except GeneratorExit:
+#             # Client disconnected
+#             print(f"🎯 Client disconnected: {client_id}")
+#         except Exception as e:
+#             print(f"🎯 Stream error for {client_id}: {str(e)}")
+#         finally:
+#             # Clean up
+#             if client_id in stream_clients:
+#                 stream_clients.pop(client_id)
+#                 print(f"🎯 Removed client {client_id}")
+    
+#     return Response(
+#         generate(),
+#         mimetype='text/event-stream',
+#         headers={
+#             'Cache-Control': 'no-cache',
+#             'Connection': 'keep-alive',
+#             'X-Accel-Buffering': 'no'
+#         }
+#     )
+
 @app.route('/stream')
 def event_stream():
-    client_id = request.args.get('client_id', str(time.time()))
+    """Memory-safe Server-Sent Events endpoint"""
+    # Generate a unique client ID
+    client_id = request.args.get('client_id', f"client_{uuid.uuid4().hex[:8]}_{int(time.time())}")
     
     def generate():
-        # Create a new queue for this client
-        q = queue.Queue()
-        stream_clients[client_id] = q
-        
-        print(f"🎯 New SSE client connected: {client_id}")
+        # Get a bounded queue from the client manager (prevents memory bloat)
+        client_queue = client_manager.add_client(client_id)
         
         try:
             # Send initial connection message
             yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started', 'client_id': client_id})}\n\n"
             
+            # Keep track of last activity
+            last_heartbeat = time.time()
+            
             while True:
                 try:
-                    # Wait for messages with timeout
-                    data = q.get(timeout=15)
-                    if data:
+                    # Check for new data with timeout
+                    try:
+                        data = client_queue.get(timeout=10.0)  # 10 second timeout
                         yield f"data: {json.dumps(data)}\n\n"
-                except queue.Empty:
-                    # Send heartbeat to keep connection alive
-                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
+                        last_heartbeat = time.time()
+                    except queue.Empty:
+                        # No data, send heartbeat every 30 seconds
+                        if time.time() - last_heartbeat > 30:
+                            yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
+                            last_heartbeat = time.time()
+                            
+                except (GeneratorExit, BrokenPipeError):
+                    # Client disconnected normally
+                    break
+                except Exception as e:
+                    print(f"⚠️ Stream error for {client_id}: {str(e)}")
+                    break
                     
-        except GeneratorExit:
-            # Client disconnected
-            print(f"🎯 Client disconnected: {client_id}")
-        except Exception as e:
-            print(f"🎯 Stream error for {client_id}: {str(e)}")
         finally:
-            # Clean up
-            if client_id in stream_clients:
-                stream_clients.pop(client_id)
-                print(f"🎯 Removed client {client_id}")
+            # ALWAYS clean up when generator exits
+            client_manager.remove_client(client_id)
     
     return Response(
         generate(),
@@ -822,29 +1020,11 @@ def event_stream():
         headers={
             'Cache-Control': 'no-cache',
             'Connection': 'keep-alive',
-            'X-Accel-Buffering': 'no'
+            'X-Accel-Buffering': 'no',
+            'Content-Type': 'text/event-stream; charset=utf-8'
         }
     )
 
-# Helper function to broadcast to all SSE clients
-def broadcast_to_clients(data):
-    """Broadcast data to all connected SSE clients"""
-    disconnected_clients = []
-    
-    for client_id, q in list(stream_clients.items()):
-        try:
-            q.put(data, timeout=2)
-            print(f"📤 Sent to client {client_id}: {data.get('type', 'unknown')}")
-        except queue.Full:
-            print(f"⚠️ Queue full for client {client_id}")
-        except Exception as e:
-            print(f"❌ Error sending to client {client_id}: {e}")
-            disconnected_clients.append(client_id)
-    
-    # Clean up disconnected clients
-    for client_id in disconnected_clients:
-        if client_id in stream_clients:
-            stream_clients.pop(client_id)
 
 @app.errorhandler(RuntimeError)
 def handle_runtime_error(e):
@@ -1213,29 +1393,66 @@ def start_mqtt_thread():
     except Exception as e:
         print(f"❌ Failed to start MQTT thread: {e}")
 
+# # --- Main Execution Block ---
+# if __name__ == '__main__':
+#     # Initialize database
+#     with app.app_context():
+#         db.create_all()
+#         # Create test user if none exists
+#         if not User.query.filter_by(username='testuser').first():
+#             admin_user = User(username='testuser')
+#             admin_user.set_password('password')
+#             db.session.add(admin_user)
+#             db.session.commit()
+#             print("Test user 'testuser' with password 'password' created.")
+
+#     # Start MQTT in background thread
+#     print("=== MQTT SETUP ===")
+#     start_mqtt_thread()
+    
+#     # Wait a moment to see if MQTT connects
+#     time.sleep(5)
+
+#     # Get port from environment variable
+#     port = int(os.environ.get('PORT', 8000))
+#     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
+#     print("Starting Flask application...")
+#     app.run(host='0.0.0.0', port=port, debug=debug_mode, use_reloader=False)
+
 # --- Main Execution Block ---
 if __name__ == '__main__':
-    # Initialize database
+    # Initialize database safely (create tables only if they don't exist)
     with app.app_context():
-        db.create_all()
-        # Create test user if none exists
-        if not User.query.filter_by(username='testuser').first():
-            admin_user = User(username='testuser')
-            admin_user.set_password('password')
-            db.session.add(admin_user)
-            db.session.commit()
-            print("Test user 'testuser' with password 'password' created.")
+        try:
+            db.create_all()
+            print("✅ Database tables checked/created")
+            
+            # Create test user if none exists
+            if not User.query.filter_by(username='testuser').first():
+                try:
+                    admin_user = User(username='testuser')
+                    admin_user.set_password('password')
+                    db.session.add(admin_user)
+                    db.session.commit()
+                    print("✅ Test user created")
+                except Exception as e:
+                    db.session.rollback()
+                    print(f"⚠️ Could not create test user: {e}")
+        except Exception as e:
+            print(f"⚠️ Database initialization warning: {e}")
 
     # Start MQTT in background thread
     print("=== MQTT SETUP ===")
     start_mqtt_thread()
     
-    # Wait a moment to see if MQTT connects
-    time.sleep(5)
-
     # Get port from environment variable
     port = int(os.environ.get('PORT', 8000))
-    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
-    print("Starting Flask application...")
-    app.run(host='0.0.0.0', port=port, debug=debug_mode, use_reloader=False)
+    # For Render deployment
+    if 'RENDER' in os.environ:
+        # Production settings for Render
+        app.run(host='0.0.0.0', port=port, debug=False)
+    else:
+        # Local development settings
+        app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
