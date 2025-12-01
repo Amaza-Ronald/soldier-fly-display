@@ -888,6 +888,27 @@
             }
         }
 
+
+                .image-loading-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: var(--border-radius);
+        }
+
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
+
+        .image-loading-placeholder div {
+            animation: pulse 1.5s infinite;
+        }
+
     </style>
 </head>
 <body>
@@ -1587,7 +1608,99 @@
             return bins;
         }
 
-        // UPDATED: Image rendering function for BLOB storage
+//         // UPDATED: Image rendering function for BLOB storage
+// function renderImages(images) {
+//     const grid = document.getElementById('imagesGrid');
+//     grid.innerHTML = '';
+
+//     if (images.length === 0) {
+//         grid.innerHTML = '<div style="text-align: center; color: #7f8c8d; padding: 20px;">No images found.</div>';
+//         return;
+//     }
+
+//     images.forEach(image => {
+//         const imageItem = document.createElement('div');
+//         imageItem.className = 'image-item';
+
+//         const imageContainer = document.createElement('div');
+//         imageContainer.className = 'image-container';
+
+//         const imageOverlay = document.createElement('div');
+//         imageOverlay.className = 'image-overlay';
+
+//         const imgElement = new Image();
+//         imgElement.src = image.src;  // This now points to /image/{image_id} from BLOB
+//         imgElement.onload = () => {
+//             const canvas = document.createElement('canvas');
+//             const ctx = canvas.getContext('2d');
+//             canvas.width = imgElement.naturalWidth;
+//             canvas.height = imgElement.naturalHeight;
+
+//             // Draw the image first
+//             ctx.drawImage(imgElement, 0, 0);
+
+//             // Draw bounding boxes
+//             if (image.bounding_boxes && Array.isArray(image.bounding_boxes)) {
+//                 image.bounding_boxes.forEach(box => {
+//                     ctx.strokeStyle = 'red';
+//                     ctx.lineWidth = 4;
+//                     ctx.strokeRect(box[0], box[1], box[2] - box[0], box[3] - box[1]);
+//                 });
+//             }
+
+//             // Draw masks
+//             if (image.masks && Array.isArray(image.masks)) {
+//                 ctx.fillStyle = 'rgba(0, 255, 0, 0.4)';
+//                 image.masks.forEach(mask => {
+//                     ctx.beginPath();
+//                     for (let i = 0; i < mask.length; i++) {
+//                         const [x, y] = mask[i];
+//                         if (i === 0) {
+//                             ctx.moveTo(x, y);
+//                         } else {
+//                             ctx.lineTo(x, y);
+//                         }
+//                     }
+//                     ctx.closePath();
+//                     ctx.fill();
+//                 });
+//             }
+
+//             imageOverlay.appendChild(canvas);
+//         };
+        
+//         // Add loading error handling
+//         imgElement.onerror = () => {
+//             console.error('Failed to load image:', image.src);
+//             imageOverlay.innerHTML = '<div style="color: #e74c3c; text-align: center; padding: 20px;">Failed to load image</div>';
+//         };
+
+//         imageOverlay.appendChild(imgElement);
+//         imageContainer.appendChild(imageOverlay);
+//         imageItem.appendChild(imageContainer);
+
+//         const details = document.createElement('div');
+//         details.className = 'details';
+//         details.innerHTML = `
+//             <div class="details-text">
+//                 <span class="metric">Tray: ${image.tray}</span>
+//                 <span class="metric">Count: ${image.count}</span>
+//                 <span class="metric">Avg Length: ${image.avgLength ? image.avgLength.toFixed(1) : 'N/A'}mm</span>
+//                 <span class="metric">Avg Weight: ${image.avgWeight ? image.avgWeight.toFixed(1) : 'N/A'}mg</span>
+//                 <span class="metric">Size: ${(image.size / 1024).toFixed(1)}KB</span>
+//             </div>
+//             <div class="timestamp">
+//                 <span class="metric">${new Date(image.timestamp).toLocaleString()}</span>
+//             </div>
+//         `;
+//         imageItem.appendChild(details);
+//         grid.appendChild(imageItem);
+//     });
+// }
+
+
+
+// UPDATED: Smarter image rendering with fallback
 function renderImages(images) {
     const grid = document.getElementById('imagesGrid');
     grid.innerHTML = '';
@@ -1596,29 +1709,48 @@ function renderImages(images) {
         grid.innerHTML = '<div style="text-align: center; color: #7f8c8d; padding: 20px;">No images found.</div>';
         return;
     }
-
+    
     images.forEach(image => {
         const imageItem = document.createElement('div');
         imageItem.className = 'image-item';
-
+        
         const imageContainer = document.createElement('div');
         imageContainer.className = 'image-container';
-
+        
         const imageOverlay = document.createElement('div');
         imageOverlay.className = 'image-overlay';
-
-        const imgElement = new Image();
-        imgElement.src = image.src;  // This now points to /image/{image_id} from BLOB
-        imgElement.onload = () => {
+        
+        // Show loading placeholder
+        const placeholder = document.createElement('div');
+        placeholder.className = 'image-loading-placeholder';
+        placeholder.innerHTML = `
+            <div style="text-align: center; padding: 20px; color: #7f8c8d;">
+                <div style="font-size: 14px;">Loading...</div>
+            </div>
+        `;
+        imageOverlay.appendChild(placeholder);
+        
+        // Load image with timeout
+        const img = new Image();
+        const loadTimeout = setTimeout(() => {
+            if (!img.complete) {
+                console.log(`Image ${image.id} loading slowly, showing placeholder`);
+            }
+        }, 3000); // 3 second timeout
+        
+        img.onload = () => {
+            clearTimeout(loadTimeout);
+            imageOverlay.innerHTML = '';
+            
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = imgElement.naturalWidth;
-            canvas.height = imgElement.naturalHeight;
-
-            // Draw the image first
-            ctx.drawImage(imgElement, 0, 0);
-
-            // Draw bounding boxes
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            
+            // Draw image
+            ctx.drawImage(img, 0, 0);
+            
+            // Draw annotations if they exist
             if (image.bounding_boxes && Array.isArray(image.bounding_boxes)) {
                 image.bounding_boxes.forEach(box => {
                     ctx.strokeStyle = 'red';
@@ -1626,38 +1758,34 @@ function renderImages(images) {
                     ctx.strokeRect(box[0], box[1], box[2] - box[0], box[3] - box[1]);
                 });
             }
-
-            // Draw masks
+            
             if (image.masks && Array.isArray(image.masks)) {
                 ctx.fillStyle = 'rgba(0, 255, 0, 0.4)';
                 image.masks.forEach(mask => {
                     ctx.beginPath();
                     for (let i = 0; i < mask.length; i++) {
                         const [x, y] = mask[i];
-                        if (i === 0) {
-                            ctx.moveTo(x, y);
-                        } else {
-                            ctx.lineTo(x, y);
-                        }
+                        if (i === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
                     }
                     ctx.closePath();
                     ctx.fill();
                 });
             }
-
+            
             imageOverlay.appendChild(canvas);
         };
         
-        // Add loading error handling
-        imgElement.onerror = () => {
-            console.error('Failed to load image:', image.src);
-            imageOverlay.innerHTML = '<div style="color: #e74c3c; text-align: center; padding: 20px;">Failed to load image</div>';
+        img.onerror = () => {
+            clearTimeout(loadTimeout);
+            imageOverlay.innerHTML = '<div style="color: #e74c3c; padding: 20px;">Failed to load</div>';
         };
-
-        imageOverlay.appendChild(imgElement);
+        
+        img.src = image.src;
         imageContainer.appendChild(imageOverlay);
         imageItem.appendChild(imageContainer);
-
+        
+        // Details remain the same
         const details = document.createElement('div');
         details.className = 'details';
         details.innerHTML = `
@@ -1677,8 +1805,32 @@ function renderImages(images) {
     });
 }
 
+// // Load images from the server
+// async function loadImages() {
+//     try {
+//         document.getElementById('imagesLoading').style.display = 'flex';
+//         document.getElementById('imagesGrid').innerHTML = '';
+        
+//         const trayFilter = document.getElementById('trayFilter').value;
+//         const response = await fetch(`/api/images/${trayFilter}`);
+        
+//         if (!response.ok) {
+//             throw new Error(`HTTP error! status: ${response.status}`);
+//         }
+        
+//         allImages = await response.json();
+//         filterImages();
+        
+//     } catch (error) {
+//         console.error('Error loading images:', error);
+//         document.getElementById('imagesGrid').innerHTML = 
+//             '<div style="text-align: center; color: #e74c3c; padding: 20px;">Error loading images</div>';
+//     } finally {
+//         document.getElementById('imagesLoading').style.display = 'none';
+//     }
+// }
 
-// Load images from the server
+// SAFE: Optimize image loading without breaking API
 async function loadImages() {
     try {
         document.getElementById('imagesLoading').style.display = 'flex';
@@ -1692,7 +1844,22 @@ async function loadImages() {
         }
         
         allImages = await response.json();
-        filterImages();
+        
+        // Show limited images initially (4 per page)
+        currentPage = 1;
+        const startIndex = (currentPage - 1) * imagesPerPage;
+        const endIndex = startIndex + imagesPerPage;
+        const initialImages = allImages.slice(startIndex, endIndex);
+        
+        // Load these images immediately
+        await renderImages(initialImages);
+        
+        // Preload next images in background
+        if (allImages.length > endIndex) {
+            setTimeout(() => preloadImages(allImages.slice(endIndex, endIndex + 4)), 1000);
+        }
+        
+        updatePaginationControls();
         
     } catch (error) {
         console.error('Error loading images:', error);
@@ -1701,6 +1868,14 @@ async function loadImages() {
     } finally {
         document.getElementById('imagesLoading').style.display = 'none';
     }
+}
+
+// Function to preload images in background
+function preloadImages(images) {
+    images.forEach(image => {
+        const img = new Image();
+        img.src = image.src;
+    });
 }
 
 // Filter images by tray
@@ -1777,15 +1952,139 @@ function refreshImages() {
 }   
 
 
+// // Real-time updates with Server-Sent Events
+// let eventSource = null;
+
+// function connectToEventStream() {
+//     try {
+//         eventSource = new EventSource('/stream');
+        
+//         eventSource.onopen = function(event) {
+//             console.log('✅ Real-time connection established');
+//         };
+        
+//         eventSource.onmessage = function(event) {
+//             try {
+//                 const data = JSON.parse(event.data);
+                
+//                 if (data.type === 'new_data') {
+//                     console.log('🔄 New MQTT data received:', data);
+                    
+//                     // Show notification for MQTT data
+//                     showNotification(`New data received for Tray ${data.tray_number}`);
+                    
+//                     // Refresh the current view
+//                     refreshCurrentView();
+                    
+//                 } else if (data.type === 'new_image') {
+//                     console.log('🖼️ New image uploaded:', data);
+                    
+//                     // Show notification for image upload
+//                     showNotification(`New image uploaded for Tray ${data.tray_number}`);
+                    
+//                     // ✅ ALWAYS refresh images when new image is uploaded
+//                     loadImages();
+                    
+//                     // Also refresh dashboard if we're viewing the same tray
+//                     if (currentSelectedTray === data.tray_number || currentSelectedTray === 0) {
+//                         refreshCurrentView();
+//                     }
+                    
+//                 } else if (data.type === 'heartbeat') {
+//                     // Connection is alive, do nothing
+//                     console.log('💓 SSE heartbeat');
+//                 }
+//             } catch (e) {
+//                 console.error('Error processing SSE message:', e);
+//             }
+//         };
+        
+//         eventSource.onerror = function(event) {
+//             console.error('❌ SSE error:', event);
+            
+//             // Attempt to reconnect after 5 seconds
+//             setTimeout(() => {
+//                 if (eventSource) {
+//                     eventSource.close();
+//                 }
+//                 connectToEventStream();
+//             }, 5000);
+//         };
+        
+//     } catch (error) {
+//         console.error('❌ Failed to establish SSE connection:', error);
+//         // Retry after 10 seconds
+//         setTimeout(connectToEventStream, 10000);
+//     }
+// }
+
+// function showNotification(message) {
+//     // Create notification element
+//     const notification = document.createElement('div');
+//     notification.style.cssText = `
+//         position: fixed;
+//         top: 20px;
+//         right: 20px;
+//         background: var(--secondary-color);
+//         color: white;
+//         padding: 15px 20px;
+//         border-radius: var(--border-radius);
+//         box-shadow: var(--shadow-medium);
+//         z-index: 1000;
+//         font-weight: 600;
+//         animation: slideIn 0.3s ease-out;
+//     `;
+    
+//     notification.textContent = message;
+//     document.body.appendChild(notification);
+    
+//     // Remove after 5 seconds
+//     setTimeout(() => {
+//         notification.style.animation = 'slideOut 0.3s ease-in';
+//         setTimeout(() => {
+//             if (notification.parentNode) {
+//                 notification.parentNode.removeChild(notification);
+//             }
+//         }, 300);
+//     }, 5000);
+// }
+
+// function refreshCurrentView() {
+//     // Refresh the currently selected tray/chart view
+//     if (currentSelectedTray !== null) {
+//         console.log('🔄 Refreshing dashboard view for tray:', currentSelectedTray);
+//         updateDashboard(currentSelectedTray, currentChartMode);
+//     }
+// }
+
+// // Initialize real-time connection when page loads
+// document.addEventListener('DOMContentLoaded', () => {
+//     // ... your existing DOMContentLoaded code ...
+    
+//     // Start real-time connection
+//     connectToEventStream();
+// });
+
+// // Clean up when page unloads
+// window.addEventListener('beforeunload', () => {
+//     if (eventSource) {
+//         eventSource.close();
+//     }
+// });
+
 // Real-time updates with Server-Sent Events
 let eventSource = null;
+let reconnectAttempts = 0;
+const maxReconnectAttempts = 10;
 
 function connectToEventStream() {
     try {
-        eventSource = new EventSource('/stream');
+        const clientId = 'dashboard_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        eventSource = new EventSource(`/stream?client_id=${clientId}`);
         
         eventSource.onopen = function(event) {
             console.log('✅ Real-time connection established');
+            reconnectAttempts = 0; // Reset on successful connection
         };
         
         eventSource.onmessage = function(event) {
@@ -1795,16 +2094,18 @@ function connectToEventStream() {
                 if (data.type === 'new_data') {
                     console.log('🔄 New MQTT data received:', data);
                     
-                    // Show notification for MQTT data
+                    // Show notification
                     showNotification(`New data received for Tray ${data.tray_number}`);
                     
-                    // Refresh the current view
-                    refreshCurrentView();
+                    // Refresh dashboard if viewing the same tray or combined view
+                    if (currentSelectedTray === data.tray_number || currentSelectedTray === 0) {
+                        refreshCurrentView();
+                    }
                     
                 } else if (data.type === 'new_image') {
                     console.log('🖼️ New image uploaded:', data);
                     
-                    // Show notification for image upload
+                    // Show notification
                     showNotification(`New image uploaded for Tray ${data.tray_number}`);
                     
                     // ✅ ALWAYS refresh images when new image is uploaded
@@ -1816,8 +2117,11 @@ function connectToEventStream() {
                     }
                     
                 } else if (data.type === 'heartbeat') {
-                    // Connection is alive, do nothing
+                    // Connection is alive
                     console.log('💓 SSE heartbeat');
+                    
+                } else if (data.type === 'connected') {
+                    console.log('🎯 SSE connected:', data.message);
                 }
             } catch (e) {
                 console.error('Error processing SSE message:', e);
@@ -1827,30 +2131,44 @@ function connectToEventStream() {
         eventSource.onerror = function(event) {
             console.error('❌ SSE error:', event);
             
-            // Attempt to reconnect after 5 seconds
-            setTimeout(() => {
-                if (eventSource) {
-                    eventSource.close();
-                }
-                connectToEventStream();
-            }, 5000);
+            // Close the connection
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+            
+            // Attempt to reconnect with exponential backoff
+            if (reconnectAttempts < maxReconnectAttempts) {
+                reconnectAttempts++;
+                const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // Max 30 seconds
+                console.log(`🔄 Reconnecting in ${delay/1000} seconds (attempt ${reconnectAttempts})...`);
+                
+                setTimeout(() => {
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        connectToEventStream();
+                    }
+                }, delay);
+            } else {
+                console.error('❌ Max reconnection attempts reached. Manual refresh required.');
+                showNotification('Real-time connection lost. Please refresh the page.', 'error');
+            }
         };
         
     } catch (error) {
         console.error('❌ Failed to establish SSE connection:', error);
-        // Retry after 10 seconds
-        setTimeout(connectToEventStream, 10000);
+        // Retry after 5 seconds
+        setTimeout(connectToEventStream, 5000);
     }
 }
 
-function showNotification(message) {
+function showNotification(message, type = 'success') {
     // Create notification element
     const notification = document.createElement('div');
     notification.style.cssText = `
         position: fixed;
         top: 20px;
         right: 20px;
-        background: var(--secondary-color);
+        background: ${type === 'error' ? 'var(--danger-color)' : 'var(--secondary-color)'};
         color: white;
         padding: 15px 20px;
         border-radius: var(--border-radius);
@@ -1858,6 +2176,8 @@ function showNotification(message) {
         z-index: 1000;
         font-weight: 600;
         animation: slideIn 0.3s ease-out;
+        max-width: 300px;
+        word-wrap: break-word;
     `;
     
     notification.textContent = message;
