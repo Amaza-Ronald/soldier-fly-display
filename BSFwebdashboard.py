@@ -132,29 +132,6 @@ MQTT_TOPIC = "bsf_monitor/larvae_data"
 mqtt_client = None
 mqtt_thread = None
 
-# connected_clients = [] # To track connected clients for SSE
-# stream_clients = {}   # Map of client_id -> queue.Queue for SSE stream management
-
-# # Add this function right after the stream_clients definition:
-# def broadcast_to_clients(data):
-#     """Broadcast data to all connected SSE clients"""
-#     disconnected_clients = []
-    
-#     for client_id, q in list(stream_clients.items()):
-#         try:
-#             q.put(data, timeout=2)
-#             print(f"📤 Sent to client {client_id}: {data.get('type', 'unknown')}")
-#         except queue.Full:
-#             print(f"⚠️ Queue full for client {client_id}")
-#         except Exception as e:
-#             print(f"❌ Error sending to client {client_id}: {e}")
-#             disconnected_clients.append(client_id)
-    
-#     # Clean up disconnected clients
-#     for client_id in disconnected_clients:
-#         if client_id in stream_clients:
-#             stream_clients.pop(client_id)
-
 
 # --- Thread-safe SSE Client Management ---
 class ClientManager:
@@ -365,26 +342,6 @@ def register():
 
     return render_template('register.html')
 
-# # CHANGED: Add BLOB image serving routes like app.py
-# @app.route('/image/<int:image_id>')
-# @login_required
-# def get_image(image_id):
-#     """Serve image directly from database BLOB"""
-#     try:
-#         image_file = ImageFile.query.get_or_404(image_id)
-        
-#         # Return image with proper MIME type
-#         return Response(
-#             image_file.image_data,
-#             mimetype=f'image/{image_file.image_format}',
-#             headers={
-#                 'Content-Length': image_file.image_size,
-#                 'Cache-Control': 'public, max-age=3600'  # Cache for 1 hour
-#             }
-#         )
-#     except Exception as e:
-#         app.logger.error(f"Error serving image {image_id}: {e}")
-#         return jsonify({"error": "Image not found"}), 404
 
 
 @app.route('/image/<int:image_id>')
@@ -438,61 +395,119 @@ def get_image_thumbnail(image_id):
         app.logger.error(f"Error serving thumbnail {image_id}: {e}")
         return jsonify({"error": "Thumbnail not found"}), 404
 
-# # CHANGED: Updated image API to work with BLOB storage
-# @app.route('/api/images/<tray_number>')
-# @login_required
-# def get_images(tray_number):
-#     """Get images from database with BLOB data converted to URLs"""
-#     try:
-#         if tray_number == 'all':
-#             images = ImageFile.query.order_by(ImageFile.timestamp.desc()).all()
-#         else:
-#             images = ImageFile.query.filter_by(tray_number=int(tray_number)).order_by(ImageFile.timestamp.desc()).all()
+# CHANGED: Updated image API to work with BLOB storage
+@app.route('/api/images/<tray_number>')
+@login_required
+def get_images(tray_number):
+    """Get images from database with BLOB data converted to URLs"""
+    try:
+        if tray_number == 'all':
+            images = ImageFile.query.order_by(ImageFile.timestamp.desc()).all()
+        else:
+            images = ImageFile.query.filter_by(tray_number=int(tray_number)).order_by(ImageFile.timestamp.desc()).all()
         
-#         image_list = []
-#         for img in images: 
-#             image_list.append({
-#                 "id": img.id,
-#                 "tray": img.tray_number,
-#                 "src": url_for('get_image', image_id=img.id),  # Use BLOB route
-#                 "thumbnail": url_for('get_image_thumbnail', image_id=img.id),  # Thumbnail URL
-#                 "timestamp": img.timestamp.isoformat(),
-#                 "count": img.count,
-#                 "avgLength": img.avg_length,
-#                 "avgWeight": img.avg_weight,
-#                 "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
-#                 "masks": json.loads(img.masks) if img.masks else [],
-#                 "size": img.image_size,
-#                 "format": img.image_format
-#             })
-#         return jsonify(image_list)
-#     except Exception as e:
-#         print(f"Error fetching images: {e}")
-#         return jsonify([])
+        image_list = []
+        for img in images: 
+            image_list.append({
+                "id": img.id,
+                "tray": img.tray_number,
+                "src": url_for('get_image', image_id=img.id),  # Use BLOB route
+                "thumbnail": url_for('get_image_thumbnail', image_id=img.id),  # Thumbnail URL
+                "timestamp": img.timestamp.isoformat(),
+                "count": img.count,
+                "avgLength": img.avg_length,
+                "avgWeight": img.avg_weight,
+                "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
+                "masks": json.loads(img.masks) if img.masks else [],
+                "size": img.image_size,
+                "format": img.image_format
+            })
+        return jsonify(image_list)
+    except Exception as e:
+        print(f"Error fetching images: {e}")
+        return jsonify([])
+
+
+
+@app.route('/api/images/<tray_number>')
+@login_required
+def get_images(tray_number):
+    """Get images from database - OPTIMIZED VERSION"""
+    try:
+        
+        # Select only the columns we need
+        query = ImageFile.query.options(
+            load_only(
+                ImageFile.id,
+                ImageFile.tray_number,
+                ImageFile.image_data,  # Keep this for base64 fallback
+                ImageFile.image_format,
+                ImageFile.timestamp,
+                ImageFile.count,
+                ImageFile.avg_length,
+                ImageFile.avg_weight,
+                ImageFile.bounding_boxes,
+                ImageFile.masks,
+                ImageFile.image_size
+            )
+        )
+        
+        if tray_number == 'all':
+            images = query.order_by(ImageFile.timestamp.desc()).limit(6).all()
+        else:
+            images = query.filter_by(tray_number=int(tray_number))\
+                         .order_by(ImageFile.timestamp.desc())\
+                         .limit(6).all()
+        
+        image_list = []
+        for img in images: 
+            # KEEP BOTH: URL for compatibility AND base64 for performance
+            image_url = url_for('get_image', image_id=img.id)
+            thumbnail_url = url_for('get_image_thumbnail', image_id=img.id)
+            
+            image_list.append({
+                "id": img.id,
+                "tray": img.tray_number,
+                "src": image_url,  # Keep original URL for compatibility
+                "src_base64": None,  # Optional: add later if needed
+                "thumbnail": thumbnail_url,
+                "timestamp": img.timestamp.isoformat(),
+                "count": img.count,
+                "avgLength": img.avg_length,
+                "avgWeight": img.avg_weight,
+                "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
+                "masks": json.loads(img.masks) if img.masks else [],
+                "size": img.image_size,
+                "format": img.image_format
+            })
+        return jsonify(image_list)
+    except Exception as e:
+        print(f"Error fetching images: {e}")
+        return jsonify([])
+
 
 # @app.route('/api/images/<tray_number>')
 # @login_required
 # def get_images(tray_number):
-#     """Get images from database - OPTIMIZED VERSION"""
+#     """Get images from database - MEMORY-OPTIMIZED VERSION"""
 #     try:
         
-#         # Select only the columns we need
 #         query = ImageFile.query.options(
 #             load_only(
 #                 ImageFile.id,
 #                 ImageFile.tray_number,
-#                 ImageFile.image_data,  # Keep this for base64 fallback
 #                 ImageFile.image_format,
 #                 ImageFile.timestamp,
 #                 ImageFile.count,
 #                 ImageFile.avg_length,
 #                 ImageFile.avg_weight,
-#                 ImageFile.bounding_boxes,
-#                 ImageFile.masks,
 #                 ImageFile.image_size
+#                 # REMOVED: image_data, bounding_boxes, masks from initial load
+                
 #             )
 #         )
         
+#         # CRITICAL: Limit to 8 most recent images only
 #         if tray_number == 'all':
 #             images = query.order_by(ImageFile.timestamp.desc()).limit(8).all()
 #         else:
@@ -502,24 +517,21 @@ def get_image_thumbnail(image_id):
         
 #         image_list = []
 #         for img in images: 
-#             # KEEP BOTH: URL for compatibility AND base64 for performance
 #             image_url = url_for('get_image', image_id=img.id)
-#             thumbnail_url = url_for('get_image_thumbnail', image_id=img.id)
             
 #             image_list.append({
 #                 "id": img.id,
 #                 "tray": img.tray_number,
-#                 "src": image_url,  # Keep original URL for compatibility
-#                 "src_base64": None,  # Optional: add later if needed
-#                 "thumbnail": thumbnail_url,
+#                 "src": image_url,
 #                 "timestamp": img.timestamp.isoformat(),
 #                 "count": img.count,
 #                 "avgLength": img.avg_length,
 #                 "avgWeight": img.avg_weight,
-#                 "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
-#                 "masks": json.loads(img.masks) if img.masks else [],
 #                 "size": img.image_size,
-#                 "format": img.image_format
+#                 "format": img.image_format,
+#                 # Removed heavy data
+#                 "bounding_boxes": [],
+#                 "masks": []
 #             })
 #         return jsonify(image_list)
 #     except Exception as e:
@@ -527,61 +539,7 @@ def get_image_thumbnail(image_id):
 #         return jsonify([])
 
 
-@app.route('/api/images/<tray_number>')
-@login_required
-def get_images(tray_number):
-    """Get images from database - MEMORY-OPTIMIZED VERSION"""
-    try:
-        from sqlalchemy.orm import load_only
-        
-        query = ImageFile.query.options(
-            load_only(
-                ImageFile.id,
-                ImageFile.tray_number,
-                ImageFile.image_format,
-                ImageFile.timestamp,
-                ImageFile.count,
-                ImageFile.avg_length,
-                ImageFile.avg_weight,
-                ImageFile.image_size
-                # REMOVED: image_data, bounding_boxes, masks from initial load
-            )
-        )
-        
-        # CRITICAL: Limit to 8 most recent images only
-        if tray_number == 'all':
-            images = query.order_by(ImageFile.timestamp.desc()).limit(8).all()
-        else:
-            images = query.filter_by(tray_number=int(tray_number))\
-                         .order_by(ImageFile.timestamp.desc())\
-                         .limit(8).all()
-        
-        image_list = []
-        for img in images: 
-            image_url = url_for('get_image', image_id=img.id)
-            
-            image_list.append({
-                "id": img.id,
-                "tray": img.tray_number,
-                "src": image_url,
-                "timestamp": img.timestamp.isoformat(),
-                "count": img.count,
-                "avgLength": img.avg_length,
-                "avgWeight": img.avg_weight,
-                "size": img.image_size,
-                "format": img.image_format,
-                # Removed heavy data
-                "bounding_boxes": [],
-                "masks": []
-            })
-        return jsonify(image_list)
-    except Exception as e:
-        print(f"Error fetching images: {e}")
-        return jsonify([])
-
-
 # Add this route to your existing Flask routes
-
 @app.route('/api/upload', methods=['POST'])
 #@login_required
 def upload_image():
