@@ -338,6 +338,10 @@
             transition: var(--transition);
             font-weight: 600;
             box-shadow: 0 2px 5px rgba(0, 0, 0, 0.15);
+            /* ✅ ADD THESE: */
+            position: relative;
+            z-index: 10;  /* Ensure buttons are above other elements */
+            pointer-events: auto;  /* Always allow pointer events when not disabled */
         }
 
         .pagination-controls button:disabled {
@@ -345,6 +349,9 @@
             cursor: not-allowed;
             transform: none;
             box-shadow: none;
+            /* ✅ ADD THIS: */
+            pointer-events: none;  /* Disable pointer events only when disabled */
+            opacity: 0.5;
         }
 
         .pagination-controls button:hover:not(:disabled) {
@@ -1844,6 +1851,17 @@ async function loadImages() {
         }
         
         allImages = await response.json();
+        //Initialize filteredImages when loading
+        filteredImages = [...allImages];
+        
+        // Reset to page 1
+        currentPage = 1;
+        
+        // Render the grid
+        renderImagesGrid();
+        
+        // Update pagination controls
+        updatePaginationControls();
         
         // Show limited images initially (4 per page)
         currentPage = 1;
@@ -1893,8 +1911,25 @@ function filterImages() {
     updatePaginationControls();
 }
 
-// Render images grid with pagination
+// // Render images grid with pagination
+// function renderImagesGrid() {
+//     const startIndex = (currentPage - 1) * imagesPerPage;
+//     const endIndex = startIndex + imagesPerPage;
+//     const imagesToShow = filteredImages.slice(startIndex, endIndex);
+    
+//     renderImages(imagesToShow);
+// }
+
+
 function renderImagesGrid() {
+    // ✅ FIX: Handle empty filteredImages gracefully
+    if (!filteredImages || filteredImages.length === 0) {
+        document.getElementById('imagesGrid').innerHTML = 
+            '<div style="text-align: center; color: #7f8c8d; padding: 20px;">No images found.</div>';
+        updatePaginationControls();
+        return;
+    }
+    
     const startIndex = (currentPage - 1) * imagesPerPage;
     const endIndex = startIndex + imagesPerPage;
     const imagesToShow = filteredImages.slice(startIndex, endIndex);
@@ -1902,26 +1937,77 @@ function renderImagesGrid() {
     renderImages(imagesToShow);
 }
 
-// Update pagination controls
+
+
+// // Update pagination controls
+// function updatePaginationControls() {
+//     const totalPages = Math.ceil(filteredImages.length / imagesPerPage);
+//     const prevBtn = document.getElementById('prevBtn');
+//     const nextBtn = document.getElementById('nextBtn');
+    
+//     prevBtn.disabled = currentPage === 1;
+//     nextBtn.disabled = currentPage === totalPages || totalPages === 0;
+    
+//     // Show page info (optional)
+//     const pageInfo = document.getElementById('pageInfo');
+//     if (!pageInfo) {
+//         const paginationControls = document.querySelector('.pagination-controls');
+//         const infoElement = document.createElement('span');
+//         infoElement.id = 'pageInfo';
+//         infoElement.style.color = 'var(--text-light)';
+//         infoElement.style.fontSize = '0.9em';
+//         paginationControls.insertBefore(infoElement, nextBtn);
+//     }
+//     document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+// }
+
+
+// FIXED: Update pagination controls
 function updatePaginationControls() {
-    const totalPages = Math.ceil(filteredImages.length / imagesPerPage);
+    const totalPages = Math.ceil((filteredImages?.length || 0) / imagesPerPage);
     const prevBtn = document.getElementById('prevBtn');
     const nextBtn = document.getElementById('nextBtn');
     
-    prevBtn.disabled = currentPage === 1;
-    nextBtn.disabled = currentPage === totalPages || totalPages === 0;
+    // ✅ FIX: Ensure buttons exist before modifying
+    if (!prevBtn || !nextBtn) {
+        console.error('Pagination buttons not found');
+        return;
+    }
     
-    // Show page info (optional)
-    const pageInfo = document.getElementById('pageInfo');
+    // ✅ FIX: Handle edge cases
+    prevBtn.disabled = currentPage <= 1;
+    nextBtn.disabled = currentPage >= totalPages || totalPages === 0;
+    
+    // ✅ FIX: Make sure buttons are visible and clickable
+    prevBtn.style.pointerEvents = prevBtn.disabled ? 'none' : 'auto';
+    nextBtn.style.pointerEvents = nextBtn.disabled ? 'none' : 'auto';
+    prevBtn.style.opacity = prevBtn.disabled ? '0.5' : '1';
+    nextBtn.style.opacity = nextBtn.disabled ? '0.5' : '1';
+    
+    // Show page info
+    let pageInfo = document.getElementById('pageInfo');
     if (!pageInfo) {
         const paginationControls = document.querySelector('.pagination-controls');
-        const infoElement = document.createElement('span');
-        infoElement.id = 'pageInfo';
-        infoElement.style.color = 'var(--text-light)';
-        infoElement.style.fontSize = '0.9em';
-        paginationControls.insertBefore(infoElement, nextBtn);
+        if (paginationControls) {
+            pageInfo = document.createElement('span');
+            pageInfo.id = 'pageInfo';
+            pageInfo.style.color = 'var(--text-light)';
+            pageInfo.style.fontSize = '0.9em';
+            pageInfo.style.margin = '0 10px';
+            
+            // ✅ FIX: Insert between buttons properly
+            paginationControls.insertBefore(pageInfo, nextBtn);
+        }
     }
-    document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages}`;
+    
+    if (pageInfo) {
+        // ✅ FIX: Show meaningful text even when no images
+        if (totalPages === 0) {
+            pageInfo.textContent = 'No images';
+        } else {
+            pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+        }
+    }
 }
 
 // Navigation functions
@@ -1930,6 +2016,9 @@ function previousPage() {
         currentPage--;
         renderImagesGrid();
         updatePaginationControls();
+
+        // Scroll to top of images grid
+        document.getElementById('imagesGrid').scrollIntoView({ behavior: 'smooth' });
     }
 }
 
@@ -1939,18 +2028,41 @@ function nextPage() {
         currentPage++;
         renderImagesGrid();
         updatePaginationControls();
+
+        // Scroll to top of images grid
+        document.getElementById('imagesGrid').scrollIntoView({ behavior: 'smooth' });
     }
 }
 
-// Refresh images
+// // Refresh images
+// function refreshImages() {
+//     loadImages();
+//     // Also refresh the dashboard data
+//     if (currentSelectedTray !== null) {
+//         updateDashboard(currentSelectedTray, currentChartMode);
+//     }
+// }   
+
+
+
+// FIXED: Refresh images
 function refreshImages() {
-    loadImages();
+    // ✅ FIX: Preserve current filter when refreshing
+    const currentFilter = document.getElementById('trayFilter')?.value;
+    
+    loadImages().then(() => {
+        // Reapply filter if it was changed
+        if (currentFilter && currentFilter !== 'all') {
+            document.getElementById('trayFilter').value = currentFilter;
+            filterImages();
+        }
+    });
+    
     // Also refresh the dashboard data
     if (currentSelectedTray !== null) {
         updateDashboard(currentSelectedTray, currentChartMode);
     }
-}   
-
+}
 
 // // Real-time updates with Server-Sent Events
 // let eventSource = null;
