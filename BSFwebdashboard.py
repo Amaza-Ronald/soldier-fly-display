@@ -395,37 +395,37 @@ def get_image_thumbnail(image_id):
         app.logger.error(f"Error serving thumbnail {image_id}: {e}")
         return jsonify({"error": "Thumbnail not found"}), 404
 
-# CHANGED: Updated image API to work with BLOB storage
-@app.route('/api/images/<tray_number>')
-@login_required
-def get_images(tray_number):
-    """Get images from database with BLOB data converted to URLs"""
-    try:
-        if tray_number == 'all':
-            images = ImageFile.query.order_by(ImageFile.timestamp.desc()).all()
-        else:
-            images = ImageFile.query.filter_by(tray_number=int(tray_number)).order_by(ImageFile.timestamp.desc()).all()
+# # CHANGED: Updated image API to work with BLOB storage
+# @app.route('/api/images/<tray_number>')
+# @login_required
+# def get_images(tray_number):
+#     """Get images from database with BLOB data converted to URLs"""
+#     try:
+#         if tray_number == 'all':
+#             images = ImageFile.query.order_by(ImageFile.timestamp.desc()).all()
+#         else:
+#             images = ImageFile.query.filter_by(tray_number=int(tray_number)).order_by(ImageFile.timestamp.desc()).all()
         
-        image_list = []
-        for img in images: 
-            image_list.append({
-                "id": img.id,
-                "tray": img.tray_number,
-                "src": url_for('get_image', image_id=img.id),  # Use BLOB route
-                "thumbnail": url_for('get_image_thumbnail', image_id=img.id),  # Thumbnail URL
-                "timestamp": img.timestamp.isoformat(),
-                "count": img.count,
-                "avgLength": img.avg_length,
-                "avgWeight": img.avg_weight,
-                "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
-                "masks": json.loads(img.masks) if img.masks else [],
-                "size": img.image_size,
-                "format": img.image_format
-            })
-        return jsonify(image_list)
-    except Exception as e:
-        print(f"Error fetching images: {e}")
-        return jsonify([])
+#         image_list = []
+#         for img in images: 
+#             image_list.append({
+#                 "id": img.id,
+#                 "tray": img.tray_number,
+#                 "src": url_for('get_image', image_id=img.id),  # Use BLOB route
+#                 "thumbnail": url_for('get_image_thumbnail', image_id=img.id),  # Thumbnail URL
+#                 "timestamp": img.timestamp.isoformat(),
+#                 "count": img.count,
+#                 "avgLength": img.avg_length,
+#                 "avgWeight": img.avg_weight,
+#                 "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
+#                 "masks": json.loads(img.masks) if img.masks else [],
+#                 "size": img.image_size,
+#                 "format": img.image_format
+#             })
+#         return jsonify(image_list)
+#     except Exception as e:
+#         print(f"Error fetching images: {e}")
+#         return jsonify([])
 
 
 
@@ -484,6 +484,8 @@ def get_images(tray_number):
     except Exception as e:
         print(f"Error fetching images: {e}")
         return jsonify([])
+
+
 
 
 # @app.route('/api/images/<tray_number>')
