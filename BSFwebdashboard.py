@@ -15,6 +15,8 @@ import json
 import time
 from flask import Response, stream_with_context
 import queue  # Add this import
+# Add query optimization
+from sqlalchemy.orm import load_only
 
 import threading
 import paho.mqtt.client as mqtt
@@ -72,36 +74,41 @@ login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
 
+
 # def cleanup_memory():
-#     """Clean up old connections and memory"""
+#     """Memory cleanup with aggressive garbage collection for Render"""
 #     while True:
-#         time.sleep(300)  # Run every 5 minutes
+#         time.sleep(60)  # Run every 1 minute (more aggressive)
 #         try:
-#             # Clean up old stream clients (older than 30 minutes)
-#             current_time = time.time()
-#             expired_clients = []
-#             for client_id, q in list(stream_clients.items()):
-#                 # Simple cleanup - remove if queue has been empty for a while
-#                 if q.qsize() == 0:  # Simple check, you might want more sophisticated logic
-#                     expired_clients.append(client_id)
+#             # Clean up inactive SSE clients
+#             removed = client_manager.cleanup_inactive(max_age_seconds=120)
             
-#             for client_id in expired_clients:
-#                 if client_id in stream_clients:
-#                     stream_clients.pop(client_id)
-            
-#             # Run garbage collection
+#             # Aggressive garbage collection
 #             gc.collect()
             
+#             if removed:
+#                 print(f"🧹 Memory cleanup: removed {len(removed)} clients")
+            
 #         except Exception as e:
-#             print(f"Cleanup error: {e}")
+#             print(f"⚠️ Cleanup error: {e}")
+
 
 def cleanup_memory():
     """Memory cleanup with aggressive garbage collection for Render"""
     while True:
-        time.sleep(60)  # Run every 1 minute (more aggressive)
+        time.sleep(30)  # Run every 30 seconds (changed from 60)
         try:
-            # Clean up inactive SSE clients
-            removed = client_manager.cleanup_inactive(max_age_seconds=120)
+            # Clean up inactive SSE clients (reduced from 120)
+            removed = client_manager.cleanup_inactive(max_age_seconds=60)
+            
+            # Force disconnect clients if too many
+            with client_manager.lock:
+                if len(client_manager.clients) > 5:
+                    # Remove oldest clients
+                    to_remove = list(client_manager.clients.keys())[:-5]
+                    for client_id in to_remove:
+                        client_manager.clients.pop(client_id, None)
+                    print(f"🧹 Force removed {len(to_remove)} excess clients")
             
             # Aggressive garbage collection
             gc.collect()
@@ -155,8 +162,8 @@ class ClientManager:
     def __init__(self):
         self.clients = OrderedDict()
         self.lock = threading.Lock()
-        self.max_clients = 50  # Prevent memory exhaustion
-        self.max_queue_size = 10  # Prevent queue memory bloat
+        self.max_clients = 10  # Prevent memory exhaustion
+        self.max_queue_size = 5  # Prevent queue memory bloat
     
     def add_client(self, client_id):
         """Add a new client with a bounded queue"""
@@ -463,64 +470,114 @@ def get_image_thumbnail(image_id):
 #         print(f"Error fetching images: {e}")
 #         return jsonify([])
 
+# @app.route('/api/images/<tray_number>')
+# @login_required
+# def get_images(tray_number):
+#     """Get images from database - OPTIMIZED VERSION"""
+#     try:
+        
+#         # Select only the columns we need
+#         query = ImageFile.query.options(
+#             load_only(
+#                 ImageFile.id,
+#                 ImageFile.tray_number,
+#                 ImageFile.image_data,  # Keep this for base64 fallback
+#                 ImageFile.image_format,
+#                 ImageFile.timestamp,
+#                 ImageFile.count,
+#                 ImageFile.avg_length,
+#                 ImageFile.avg_weight,
+#                 ImageFile.bounding_boxes,
+#                 ImageFile.masks,
+#                 ImageFile.image_size
+#             )
+#         )
+        
+#         if tray_number == 'all':
+#             images = query.order_by(ImageFile.timestamp.desc()).limit(8).all()
+#         else:
+#             images = query.filter_by(tray_number=int(tray_number))\
+#                          .order_by(ImageFile.timestamp.desc())\
+#                          .limit(8).all()
+        
+#         image_list = []
+#         for img in images: 
+#             # KEEP BOTH: URL for compatibility AND base64 for performance
+#             image_url = url_for('get_image', image_id=img.id)
+#             thumbnail_url = url_for('get_image_thumbnail', image_id=img.id)
+            
+#             image_list.append({
+#                 "id": img.id,
+#                 "tray": img.tray_number,
+#                 "src": image_url,  # Keep original URL for compatibility
+#                 "src_base64": None,  # Optional: add later if needed
+#                 "thumbnail": thumbnail_url,
+#                 "timestamp": img.timestamp.isoformat(),
+#                 "count": img.count,
+#                 "avgLength": img.avg_length,
+#                 "avgWeight": img.avg_weight,
+#                 "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
+#                 "masks": json.loads(img.masks) if img.masks else [],
+#                 "size": img.image_size,
+#                 "format": img.image_format
+#             })
+#         return jsonify(image_list)
+#     except Exception as e:
+#         print(f"Error fetching images: {e}")
+#         return jsonify([])
+
+
 @app.route('/api/images/<tray_number>')
 @login_required
 def get_images(tray_number):
-    """Get images from database - OPTIMIZED VERSION"""
+    """Get images from database - MEMORY-OPTIMIZED VERSION"""
     try:
-        # Add query optimization
         from sqlalchemy.orm import load_only
         
-        # Select only the columns we need
         query = ImageFile.query.options(
             load_only(
                 ImageFile.id,
                 ImageFile.tray_number,
-                ImageFile.image_data,  # Keep this for base64 fallback
                 ImageFile.image_format,
                 ImageFile.timestamp,
                 ImageFile.count,
                 ImageFile.avg_length,
                 ImageFile.avg_weight,
-                ImageFile.bounding_boxes,
-                ImageFile.masks,
                 ImageFile.image_size
+                # REMOVED: image_data, bounding_boxes, masks from initial load
             )
         )
         
+        # CRITICAL: Limit to 8 most recent images only
         if tray_number == 'all':
-            images = query.order_by(ImageFile.timestamp.desc()).limit(20).all()
+            images = query.order_by(ImageFile.timestamp.desc()).limit(8).all()
         else:
             images = query.filter_by(tray_number=int(tray_number))\
                          .order_by(ImageFile.timestamp.desc())\
-                         .limit(20).all()
+                         .limit(8).all()
         
         image_list = []
         for img in images: 
-            # KEEP BOTH: URL for compatibility AND base64 for performance
             image_url = url_for('get_image', image_id=img.id)
-            thumbnail_url = url_for('get_image_thumbnail', image_id=img.id)
             
             image_list.append({
                 "id": img.id,
                 "tray": img.tray_number,
-                "src": image_url,  # Keep original URL for compatibility
-                "src_base64": None,  # Optional: add later if needed
-                "thumbnail": thumbnail_url,
+                "src": image_url,
                 "timestamp": img.timestamp.isoformat(),
                 "count": img.count,
                 "avgLength": img.avg_length,
                 "avgWeight": img.avg_weight,
-                "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
-                "masks": json.loads(img.masks) if img.masks else [],
                 "size": img.image_size,
-                "format": img.image_format
+                "format": img.image_format,
+                # Removed heavy data
+                "bounding_boxes": [],
+                "masks": []
             })
         return jsonify(image_list)
     except Exception as e:
         print(f"Error fetching images: {e}")
         return jsonify([])
-
 
 
 # Add this route to your existing Flask routes
@@ -925,57 +982,10 @@ def dashboard():
     return render_template('dashboard.html', tray_data=tray_data_for_template)
 
 
-# --- Server-Sent Events (SSE) for Real-Time Updates ---
-# --- Server-Sent Events (SSE) for Real-Time Updates ---
-# @app.route('/stream')
-# def event_stream():
-#     client_id = request.args.get('client_id', str(time.time()))
-    
-#     def generate():
-#         # Create a new queue for this client
-#         q = queue.Queue()
-#         stream_clients[client_id] = q
-        
-#         print(f"🎯 New SSE client connected: {client_id}")
-        
-#         try:
-#             # Send initial connection message
-#             yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started', 'client_id': client_id})}\n\n"
-            
-#             while True:
-#                 try:
-#                     # Wait for messages with timeout
-#                     data = q.get(timeout=15)
-#                     if data:
-#                         yield f"data: {json.dumps(data)}\n\n"
-#                 except queue.Empty:
-#                     # Send heartbeat to keep connection alive
-#                     yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': time.time()})}\n\n"
-                    
-#         except GeneratorExit:
-#             # Client disconnected
-#             print(f"🎯 Client disconnected: {client_id}")
-#         except Exception as e:
-#             print(f"🎯 Stream error for {client_id}: {str(e)}")
-#         finally:
-#             # Clean up
-#             if client_id in stream_clients:
-#                 stream_clients.pop(client_id)
-#                 print(f"🎯 Removed client {client_id}")
-    
-#     return Response(
-#         generate(),
-#         mimetype='text/event-stream',
-#         headers={
-#             'Cache-Control': 'no-cache',
-#             'Connection': 'keep-alive',
-#             'X-Accel-Buffering': 'no'
-#         }
-#     )
 
 # @app.route('/stream')
 # def event_stream():
-#     """Memory-safe Server-Sent Events endpoint - NON-BLOCKING VERSION"""
+#     """Memory-safe Server-Sent Events endpoint - FIXED NON-BLOCKING VERSION"""
 #     # Generate a unique client ID
 #     client_id = request.args.get('client_id', f"client_{uuid.uuid4().hex[:8]}_{int(time.time())}")
     
@@ -990,20 +1000,18 @@ def dashboard():
 #             # Use a short timeout to prevent gunicorn worker blocking
 #             heartbeat_interval = 25  # Render timeout is 30 seconds, use 25 to be safe
 #             last_heartbeat = time.time()
-#             last_data_sent = time.time()
             
 #             while True:
 #                 try:
-#                     # NON-BLOCKING: Check for data with very short timeout
+#                     # NON-BLOCKING: Check for data with short timeout
 #                     try:
-#                         # Use get_nowait() or very short timeout to avoid blocking workers
-#                         data = client_queue.get_nowait()  # NON-BLOCKING
+#                         # Use short timeout instead of blocking forever
+#                         data = client_queue.get(timeout=60)  # 1 second timeout
 #                         yield f"data: {json.dumps(data)}\n\n"
-#                         last_data_sent = time.time()
 #                         last_heartbeat = time.time()
 #                         continue
 #                     except queue.Empty:
-#                         # No data available - continue to heartbeat check
+#                         # No data available - check if we need heartbeat
 #                         pass
                     
 #                     # Send heartbeat to keep connection alive and prevent timeouts
@@ -1011,10 +1019,6 @@ def dashboard():
 #                     if current_time - last_heartbeat > heartbeat_interval:
 #                         yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
 #                         last_heartbeat = current_time
-                    
-#                     # Small sleep to prevent CPU spinning but keep connection responsive
-#                     # This yields control back to event loop
-#                     time.sleep(0.1)  # 100ms sleep
                     
 #                 except (GeneratorExit, BrokenPipeError, ConnectionResetError):
 #                     # Client disconnected normally
@@ -1040,50 +1044,46 @@ def dashboard():
 
 @app.route('/stream')
 def event_stream():
-    """Memory-safe Server-Sent Events endpoint - FIXED NON-BLOCKING VERSION"""
-    # Generate a unique client ID
+    """Memory-safe SSE with aggressive timeout for Render"""
     client_id = request.args.get('client_id', f"client_{uuid.uuid4().hex[:8]}_{int(time.time())}")
     
     def generate():
-        # Get a bounded queue from the client manager
         client_queue = client_manager.add_client(client_id)
         
         try:
-            # Send initial connection message
+            # Send initial connection
             yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started', 'client_id': client_id})}\n\n"
             
-            # Use a short timeout to prevent gunicorn worker blocking
-            heartbeat_interval = 25  # Render timeout is 30 seconds, use 25 to be safe
+            # CRITICAL: Use shorter timeout for Render's 512MB limit
+            heartbeat_interval = 20  # Reduced from 25
+            max_connection_time = 300  # 5 minutes max connection time
+            connection_start = time.time()
             last_heartbeat = time.time()
             
             while True:
+                # CRITICAL: Force disconnect after max_connection_time
+                if time.time() - connection_start > max_connection_time:
+                    print(f"⏰ Force disconnecting client {client_id} after {max_connection_time}s")
+                    break
+                
                 try:
-                    # NON-BLOCKING: Check for data with short timeout
-                    try:
-                        # Use short timeout instead of blocking forever
-                        data = client_queue.get(timeout=60)  # 1 second timeout
-                        yield f"data: {json.dumps(data)}\n\n"
-                        last_heartbeat = time.time()
-                        continue
-                    except queue.Empty:
-                        # No data available - check if we need heartbeat
-                        pass
-                    
-                    # Send heartbeat to keep connection alive and prevent timeouts
-                    current_time = time.time()
-                    if current_time - last_heartbeat > heartbeat_interval:
-                        yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
-                        last_heartbeat = current_time
-                    
-                except (GeneratorExit, BrokenPipeError, ConnectionResetError):
-                    # Client disconnected normally
-                    break
-                except Exception as e:
-                    print(f"⚠️ Stream error for {client_id}: {str(e)}")
-                    break
-                    
+                    # Use shorter timeout
+                    data = client_queue.get(timeout=0.5)  # Changed from 60 to 0.5
+                    yield f"data: {json.dumps(data)}\n\n"
+                    last_heartbeat = time.time()
+                    continue
+                except queue.Empty:
+                    pass
+                
+                # Send heartbeat
+                current_time = time.time()
+                if current_time - last_heartbeat > heartbeat_interval:
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
+                    last_heartbeat = current_time
+                
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError):
+            pass
         finally:
-            # ALWAYS clean up when generator exits
             client_manager.remove_client(client_id)
     
     return Response(
