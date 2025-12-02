@@ -1279,6 +1279,81 @@
                 });
             }
 
+
+            // ✅ FIX: Dynamic scale configuration based on mode
+            const scales = {
+                x: {
+                    title: {
+                        display: true,
+                        text: 'Days'
+                    }
+                }
+            };
+
+            // ✅ FIX: Add y-axis configuration based on chart mode
+            if (chartMode === 'both') {
+                // Both axes visible
+                scales.y = {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: 'Length (mm)'
+                    },
+                    beginAtZero: true,
+                    grid: {
+                        drawOnChartArea: true,  // Length axis draws the grid
+                        color: 'rgba(0, 0, 0, 0.1)'
+                    }
+                };
+                scales.y1 = {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Weight (mg)'
+                    },
+                    grid: {
+                        drawOnChartArea: false,  // Weight axis doesn't draw grid (avoid overlap)
+                    },
+                    beginAtZero: true
+                };
+            } else if (chartMode === 'length') {
+                // Only length axis
+                scales.y = {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: 'Length (mm)'
+                    },
+                    beginAtZero: true,
+                    grid: {
+                        drawOnChartArea: true,  // ✅ Length axis draws the grid
+                        color: 'rgba(0, 0, 0, 0.1)'
+                    }
+                };
+            } else if (chartMode === 'weight') {
+                // ✅ FIX: Only weight axis - make sure it draws the grid
+                scales.y1 = {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: {
+                        display: true,
+                        text: 'Weight (mg)'
+                    },
+                    grid: {
+                        drawOnChartArea: true,  // ✅ CRITICAL: Weight axis MUST draw grid when it's the only axis
+                        color: 'rgba(0, 0, 0, 0.1)'
+                    },
+                    beginAtZero: true
+                };
+            }
+
             growthChart = new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -1292,37 +1367,38 @@
                         mode: 'index',
                         intersect: false,
                     },
-                    scales: {
-                        y: {
-                            type: 'linear',
-                            display: (chartMode === 'both' || chartMode === 'length'),
-                            position: 'left',
-                            title: {
-                                display: (chartMode === 'both' || chartMode === 'length'),
-                                text: 'Length (mm)'
-                            },
-                            beginAtZero: true
-                        },
-                        y1: {
-                            type: 'linear',
-                            display: (chartMode === 'both' || chartMode === 'weight'),
-                            position: 'right',
-                            title: {
-                                display: (chartMode === 'both' || chartMode === 'weight'),
-                                text: 'Weight (mg)'
-                            },
-                            grid: {
-                                drawOnChartArea: false,
-                            },
-                            beginAtZero: true
-                        },
-                        x: {
-                            title: {
-                                display: true,
-                                text: 'Days'
-                            }
-                        }
-                    },
+                    // scales: {
+                    //     y: {
+                    //         type: 'linear',
+                    //         display: (chartMode === 'both' || chartMode === 'length'),
+                    //         position: 'left',
+                    //         title: {
+                    //             display: (chartMode === 'both' || chartMode === 'length'),
+                    //             text: 'Length (mm)'
+                    //         },
+                    //         beginAtZero: true
+                    //     },
+                    //     y1: {
+                    //         type: 'linear',
+                    //         display: (chartMode === 'both' || chartMode === 'weight'),
+                    //         position: 'right',
+                    //         title: {
+                    //             display: (chartMode === 'both' || chartMode === 'weight'),
+                    //             text: 'Weight (mg)'
+                    //         },
+                    //         grid: {
+                    //             drawOnChartArea: false,
+                    //         },
+                    //         beginAtZero: true
+                    //     },
+                    //     x: {
+                    //         title: {
+                    //             display: true,
+                    //             text: 'Days'
+                    //         }
+                    //     }
+                    // },
+                    scales: scales,
                     plugins: {
                         tooltip: {
                             callbacks: {
@@ -1466,6 +1542,61 @@
             const sortedDays = Array.from(allDays).sort((a, b) => a - b);
             const growthLabels = sortedDays.map(day => `Day ${day}`);
 
+            // ✅ FIX: Dynamic scale configuration for comparison charts
+            const scales = {
+                x: {
+                    title: { display: true, text: 'Days' }
+                }
+            };
+
+            // ✅ FIX: Configure scales based on chart mode
+            if (chartMode === 'both') {
+                scales.y = {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: { display: true, text: 'Length (mm)' },
+                    beginAtZero: true,
+                    grid: {
+                        drawOnChartArea: true,
+                        color: 'rgba(0, 0, 0, 0.1)'
+                    }
+                };
+                scales.y1 = {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: { display: true, text: 'Weight (mg)' },
+                    grid: { drawOnChartArea: false },
+                    beginAtZero: true
+                };
+            } else if (chartMode === 'length') {
+                scales.y = {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: { display: true, text: 'Length (mm)' },
+                    beginAtZero: true,
+                    grid: {
+                        drawOnChartArea: true,  // ✅ Length draws grid
+                        color: 'rgba(0, 0, 0, 0.1)'
+                    }
+                };
+            } else if (chartMode === 'weight') {
+                // ✅ FIX: Weight-only mode with grid
+                scales.y1 = {
+                    type: 'linear',
+                    display: true,
+                    position: 'right',
+                    title: { display: true, text: 'Weight (mg)' },
+                    grid: {
+                        drawOnChartArea: true,  // ✅ CRITICAL: Weight draws grid when alone
+                        color: 'rgba(0, 0, 0, 0.1)'
+                    },
+                    beginAtZero: true
+                };
+            }
+
             growthChart = new Chart(growthCtx, {
                 type: 'line',
                 data: {
@@ -1476,26 +1607,27 @@
                     responsive: true,
                     maintainAspectRatio: false,
                     interaction: { mode: 'index', intersect: false },
-                    scales: {
-                        y: {
-                            type: 'linear',
-                            display: (chartMode === 'both' || chartMode === 'length'),
-                            position: 'left',
-                            title: { display: (chartMode === 'both' || chartMode === 'length'), text: 'Length (mm)' },
-                            beginAtZero: true
-                        },
-                        y1: {
-                            type: 'linear',
-                            display: (chartMode === 'both' || chartMode === 'weight'),
-                            position: 'right',
-                            title: { display: (chartMode === 'both' || chartMode === 'weight'), text: 'Weight (mg)' },
-                            grid: { drawOnChartArea: false },
-                            beginAtZero: true
-                        },
-                        x: {
-                            title: { display: true, text: 'Days' }
-                        }
-                    },
+                    // scales: {
+                    //     y: {
+                    //         type: 'linear',
+                    //         display: (chartMode === 'both' || chartMode === 'length'),
+                    //         position: 'left',
+                    //         title: { display: (chartMode === 'both' || chartMode === 'length'), text: 'Length (mm)' },
+                    //         beginAtZero: true
+                    //     },
+                    //     y1: {
+                    //         type: 'linear',
+                    //         display: (chartMode === 'both' || chartMode === 'weight'),
+                    //         position: 'right',
+                    //         title: { display: (chartMode === 'both' || chartMode === 'weight'), text: 'Weight (mg)' },
+                    //         grid: { drawOnChartArea: false },
+                    //         beginAtZero: true
+                    //     },
+                    //     x: {
+                    //         title: { display: true, text: 'Days' }
+                    //     }
+                    // },
+                    scales: scales,  // Use dynamic scales
                     plugins: {
                         tooltip: {
                             callbacks: {
