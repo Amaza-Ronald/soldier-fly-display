@@ -61,7 +61,7 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'max_overflow': 10,       # Maximum overflow connections
     'pool_recycle': 300,      # Recycle connections after 5 minutes
     'pool_pre_ping': True,    # Verify connections before use
-    'pool_timeout': 30        # Timeout for getting connection
+    'pool_timeout': 90        # Timeout for getting connection
 }
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False  # Reduce JSON size
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload
@@ -1061,7 +1061,7 @@ def event_stream():
                     # NON-BLOCKING: Check for data with short timeout
                     try:
                         # Use short timeout instead of blocking forever
-                        data = client_queue.get(timeout=1.0)  # 1 second timeout
+                        data = client_queue.get(timeout=60)  # 1 second timeout
                         yield f"data: {json.dumps(data)}\n\n"
                         last_heartbeat = time.time()
                         continue
@@ -1513,9 +1513,9 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"⚠️ Database initialization warning: {e}")
 
-    # Start MQTT in background thread
-    print("=== MQTT SETUP ===")
-    start_mqtt_thread()
+    # # Start MQTT in background thread
+    # print("=== MQTT SETUP ===")
+    # start_mqtt_thread()
     
     # Get port from environment variable
     port = int(os.environ.get('PORT', 8000))
