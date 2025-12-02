@@ -8,7 +8,6 @@ services:
     region: oregon
     buildCommand: pip install -r requirements.txt;
     startCommand: gunicorn wsgi:app
-    autoDeploy: commit
     envVars:
       - key: DATABASE_URL
         value: "postgresql://bsf_user:dQ5VfLVw3eLsp9aYSw01Eyn7gxu3GDDx@dpg-d4lg6ha4d50c73e2llq0-a.oregon-postgres.render.com/bsf_larvae"
