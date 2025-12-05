@@ -943,6 +943,18 @@ def dashboard():
 
 
 
+@app.route('/test_mqtt')
+def test_mqtt():
+    """Test if MQTT is working"""
+    status = {
+        "mqtt_thread_running": mqtt_thread and mqtt_thread.is_alive() if mqtt_thread else False,
+        "mqtt_client_connected": mqtt_client and mqtt_client.is_connected() if mqtt_client else False,
+        "broker": MQTT_BROKER,
+        "port": MQTT_PORT,
+        "topic": MQTT_TOPIC
+    }
+    return jsonify(status)
+
 # @app.route('/stream')
 # def event_stream():
 #     """Memory-safe Server-Sent Events endpoint - FIXED NON-BLOCKING VERSION"""
