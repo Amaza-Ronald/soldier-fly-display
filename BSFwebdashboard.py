@@ -1473,9 +1473,9 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"⚠️ Database initialization warning: {e}")
 
-    # # Start MQTT in background thread
-    # print("=== MQTT SETUP ===")
-    # start_mqtt_thread()
+    # Start MQTT in background thread
+    print("=== MQTT SETUP ===")
+    start_mqtt_thread()
     
     # Get port from environment variable
     port = int(os.environ.get('PORT', 8000))
