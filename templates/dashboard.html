@@ -1055,7 +1055,7 @@
             
             // Show dropdown instead of buttons if too many trays or on mobile
             const isMobile = window.innerWidth <= 768;
-            const tooManyTrays = trayButtons.length > 6; // Switch if more than 6 trays
+            const tooManyTrays = trayButtons.length > 4; // Switch if more than 4 trays
             
             if (isMobile || tooManyTrays) {
                 traySelector.style.display = 'none';
