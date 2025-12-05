@@ -3,7 +3,7 @@ services:
     name: soldier-fly-display
     runtime: python
     repo: https://github.com/Amaza-Ronald/soldier-fly-display
-    branch: instance
+    branch: main
     plan: free
     region: oregon
     buildCommand: pip install -r requirements.txt;
