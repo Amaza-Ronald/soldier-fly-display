@@ -238,7 +238,7 @@ class User(UserMixin, db.Model):
 class ImageFile(db.Model):
     __tablename__ = "image_files"
     id = db.Column(db.Integer, primary_key=True)
-    tray_number = db.Column(db.Integer, nullable=False)
+    tray_number = db.Column(db.Integer, nullable=False,index=True)
     
     # Use LargeBinary for PostgreSQL BYTEA
     image_data = db.Column(db.LargeBinary, nullable=False)
@@ -246,7 +246,7 @@ class ImageFile(db.Model):
     image_size = db.Column(db.Integer, nullable=False)
     
     # Metadata
-    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),index=True)
     avg_length = db.Column(db.Float, nullable=True)
     avg_weight = db.Column(db.Float, nullable=True)
     count = db.Column(db.Integer, nullable=True)
@@ -255,19 +255,29 @@ class ImageFile(db.Model):
     bounding_boxes = db.Column(db.Text, nullable=True)
     masks = db.Column(db.Text, nullable=True)
 
+    # ADDED: Composite index for common queries
+    __table_args__ = (
+        db.Index('idx_image_tray_timestamp', 'tray_number', 'timestamp'),
+    )
+
     def __repr__(self):
         return f"<ImageFile Tray {self.tray_number} - {self.timestamp}>"
 
 class LarvaeData(db.Model):
     __tablename__ = "larvae_data"
     id = db.Column(db.Integer, primary_key=True)
-    tray_number = db.Column(db.Integer, nullable=False)
+    tray_number = db.Column(db.Integer, nullable=False,index=True)
     length = db.Column(db.Float, nullable=False)
     width = db.Column(db.Float, nullable=False)
     area = db.Column(db.Float, nullable=False)
     weight = db.Column(db.Float, nullable=False)
     count = db.Column(db.Integer, nullable=False)
-    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),index=True)
+
+    # ADDED: Composite index for common queries
+    __table_args__ = (
+        db.Index('idx_larvae_tray_timestamp', 'tray_number', 'timestamp'),
+    )
 
     def __repr__(self):
         return f"<LarvaeData Tray {self.tray_number} - {self.timestamp}>"
