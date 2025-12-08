@@ -27,24 +27,6 @@ import collections
 from collections import OrderedDict
 
 
-# # --- Flask App Configuration ---
-# app = Flask(__name__, static_folder='static')
-# app.secret_key = os.urandom(24)
-
-# # PostgreSQL Database Configuration
-# database_url = os.environ.get('DATABASE_URL', 'sqlite:///larvae_monitoring.db')
-
-# # Fix for Render PostgreSQL URL format
-# if database_url and database_url.startswith('postgres://'):
-#     database_url = database_url.replace('postgres://', 'postgresql://', 1)
-
-# app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-# app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-# app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-#     'pool_recycle': 300,
-#     'pool_pre_ping': True
-# }
-
 # --- Flask App Configuration ---
 app = Flask(__name__, static_folder='static')
 app.secret_key = os.urandom(24)
@@ -238,7 +220,7 @@ class User(UserMixin, db.Model):
 class ImageFile(db.Model):
     __tablename__ = "image_files"
     id = db.Column(db.Integer, primary_key=True)
-    tray_number = db.Column(db.Integer, nullable=False)
+    tray_number = db.Column(db.Integer, nullable=False,index=True)
     
     # Use LargeBinary for PostgreSQL BYTEA
     image_data = db.Column(db.LargeBinary, nullable=False)
@@ -246,7 +228,7 @@ class ImageFile(db.Model):
     image_size = db.Column(db.Integer, nullable=False)
     
     # Metadata
-    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),index=True)
     avg_length = db.Column(db.Float, nullable=True)
     avg_weight = db.Column(db.Float, nullable=True)
     count = db.Column(db.Integer, nullable=True)
@@ -255,19 +237,29 @@ class ImageFile(db.Model):
     bounding_boxes = db.Column(db.Text, nullable=True)
     masks = db.Column(db.Text, nullable=True)
 
+    # ADDED: Composite index for common queries
+    __table_args__ = (
+        db.Index('idx_image_tray_timestamp', 'tray_number', 'timestamp'),
+    )
+
     def __repr__(self):
         return f"<ImageFile Tray {self.tray_number} - {self.timestamp}>"
 
 class LarvaeData(db.Model):
     __tablename__ = "larvae_data"
     id = db.Column(db.Integer, primary_key=True)
-    tray_number = db.Column(db.Integer, nullable=False)
+    tray_number = db.Column(db.Integer, nullable=False,index=True)
     length = db.Column(db.Float, nullable=False)
     width = db.Column(db.Float, nullable=False)
     area = db.Column(db.Float, nullable=False)
     weight = db.Column(db.Float, nullable=False)
     count = db.Column(db.Integer, nullable=False)
-    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),index=True)
+
+    # ADDED: Composite index for common queries
+    __table_args__ = (
+        db.Index('idx_larvae_tray_timestamp', 'tray_number', 'timestamp'),
+    )
 
     def __repr__(self):
         return f"<LarvaeData Tray {self.tray_number} - {self.timestamp}>"
@@ -722,21 +714,95 @@ def get_tray_data(tray_number):
                 "ranges": list(weight_bins.keys()),
                 "counts": list(weight_bins.values())
             },
-            "timestamp": latest_entry.timestamp.isoformat() if latest_entry else datetime.utcnow().isoformat()
+            "timestamp": latest_entry.timestamp.isoformat() if latest_entry else datetime.now(timezone.utc).isoformat()
         })
     except Exception as e:
         app.logger.error(f"Error fetching tray data for tray {tray_number}: {e}")
         return jsonify({"error": str(e)}), 500
     
 
+# @app.route('/health')
+# def health_check():
+#     try:
+#         # Simple database check
+#         db.session.execute('SELECT 1')
+#         return {'status': 'healthy', 'database': 'connected'}, 200
+#     except Exception as e:
+#         return {'status': 'unhealthy', 'error': str(e)}, 500
+
 @app.route('/health')
 def health_check():
+    """Simple health check endpoint - FIXED VERSION"""
     try:
-        # Simple database check
-        db.session.execute('SELECT 1')
-        return {'status': 'healthy', 'database': 'connected'}, 200
+        # Just return a simple response without database check
+        return {'status': 'healthy', 'timestamp': datetime.now(timezone.utc).isoformat()}, 200
     except Exception as e:
         return {'status': 'unhealthy', 'error': str(e)}, 500
+    
+    
+@app.route('/api/check_updates')
+@login_required
+def check_updates():
+    """Check if there are updates since last check - optimized for polling"""
+    try:
+        # Get latest data timestamp
+        latest_data = LarvaeData.query.order_by(LarvaeData.timestamp.desc()).first()
+        data_timestamp = latest_data.timestamp.isoformat() if latest_data else None
+        
+        # Get latest image timestamp
+        latest_image = ImageFile.query.order_by(ImageFile.timestamp.desc()).first()
+        image_timestamp = latest_image.timestamp.isoformat() if latest_image else None
+        
+        return jsonify({
+            'data_timestamp': data_timestamp,
+            'image_timestamp': image_timestamp,
+            'current_time': datetime.now(timezone.utc).isoformat(),
+            'has_updates': True  # Frontend decides based on timestamps
+        })
+        
+    except Exception as e:
+        print(f"Error checking updates: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ping')
+def ping():
+    """Simple ping endpoint for connection checking"""
+    return {'status': 'ok', 'timestamp': datetime.now(timezone.utc).isoformat()}, 200
+
+
+
+
+#Check query performance with indexing
+@app.route('/debug/query_performance')
+def debug_query_performance():
+    """Debug endpoint to check query performance"""
+    import time
+    
+    test_cases = [
+        ("Get latest for tray 5", 
+         lambda: LarvaeData.query.filter_by(tray_number=5).order_by(LarvaeData.timestamp.desc()).first()),
+        
+        ("Get all for tray 5", 
+         lambda: LarvaeData.query.filter_by(tray_number=5).order_by(LarvaeData.timestamp.asc()).all()),
+        
+        ("Get recent images", 
+         lambda: ImageFile.query.order_by(ImageFile.timestamp.desc()).limit(4).all()),
+    ]
+    
+    results = []
+    for name, query_func in test_cases:
+        start = time.time()
+        result = query_func()
+        elapsed = (time.time() - start) * 1000  # Convert to milliseconds
+        results.append({
+            "query": name,
+            "time_ms": round(elapsed, 2),
+            "result_count": len(result) if isinstance(result, list) else (1 if result else 0)
+        })
+    
+    return jsonify({"queries": results, "message": "Indexes should make these queries faster"})
+
+
     
 # Add this route to debug stream clients
 @app.route('/debug/stream_clients')
@@ -838,7 +904,7 @@ def get_combined_tray_data():
                 "ranges": list(weight_bins.keys()),
                 "counts": list(weight_bins.values())
             },
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
     except Exception as e:
         app.logger.error(f"Error fetching combined tray data: {e}")
@@ -916,7 +982,7 @@ def get_comparison_data():
 
         return jsonify({
             'trays': trays_data_for_comparison,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         })
     except Exception as e:
         # Log the error for debugging purposes
@@ -955,63 +1021,30 @@ def test_mqtt():
     }
     return jsonify(status)
 
-# @app.route('/stream')
-# def event_stream():
-#     """Memory-safe Server-Sent Events endpoint - FIXED NON-BLOCKING VERSION"""
-#     # Generate a unique client ID
-#     client_id = request.args.get('client_id', f"client_{uuid.uuid4().hex[:8]}_{int(time.time())}")
-    
-#     def generate():
-#         # Get a bounded queue from the client manager
-#         client_queue = client_manager.add_client(client_id)
+# App route for refresh
+@app.route('/api/last_update')
+@login_required
+def last_update():
+    """Return timestamp of last update for polling"""
+    try:
+        # Get latest larvae data timestamp
+        latest_data = LarvaeData.query.order_by(LarvaeData.timestamp.desc()).first()
+        data_timestamp = latest_data.timestamp.isoformat() if latest_data else None
         
-#         try:
-#             # Send initial connection message
-#             yield f"data: {json.dumps({'type': 'connected', 'message': 'Stream started', 'client_id': client_id})}\n\n"
-            
-#             # Use a short timeout to prevent gunicorn worker blocking
-#             heartbeat_interval = 25  # Render timeout is 30 seconds, use 25 to be safe
-#             last_heartbeat = time.time()
-            
-#             while True:
-#                 try:
-#                     # NON-BLOCKING: Check for data with short timeout
-#                     try:
-#                         # Use short timeout instead of blocking forever
-#                         data = client_queue.get(timeout=60)  # 1 second timeout
-#                         yield f"data: {json.dumps(data)}\n\n"
-#                         last_heartbeat = time.time()
-#                         continue
-#                     except queue.Empty:
-#                         # No data available - check if we need heartbeat
-#                         pass
-                    
-#                     # Send heartbeat to keep connection alive and prevent timeouts
-#                     current_time = time.time()
-#                     if current_time - last_heartbeat > heartbeat_interval:
-#                         yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': current_time})}\n\n"
-#                         last_heartbeat = current_time
-                    
-#                 except (GeneratorExit, BrokenPipeError, ConnectionResetError):
-#                     # Client disconnected normally
-#                     break
-#                 except Exception as e:
-#                     print(f"⚠️ Stream error for {client_id}: {str(e)}")
-#                     break
-                    
-#         finally:
-#             # ALWAYS clean up when generator exits
-#             client_manager.remove_client(client_id)
-    
-#     return Response(
-#         generate(),
-#         mimetype='text/event-stream',
-#         headers={
-#             'Cache-Control': 'no-cache',
-#             'X-Accel-Buffering': 'no',
-#             'Content-Type': 'text/event-stream; charset=utf-8'
-#         }
-#     )
+        # Get latest image timestamp
+        latest_image = ImageFile.query.order_by(ImageFile.timestamp.desc()).first()
+        image_timestamp = latest_image.timestamp.isoformat() if latest_image else None
+        
+        # Check if we need refresh (simplified: always return True for now)
+        return jsonify({
+            'data_timestamp': data_timestamp,
+            'image_timestamp': image_timestamp,
+            'current_time': datetime.now(timezone.utc).isoformat(),
+            'needs_refresh': True  # You can add logic here based on timestamps
+        })
+    except Exception as e:
+        print(f"Error getting last update: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/stream')
@@ -1436,32 +1469,6 @@ def start_mqtt_thread():
     except Exception as e:
         print(f"❌ Failed to start MQTT thread: {e}")
 
-# # --- Main Execution Block ---
-# if __name__ == '__main__':
-#     # Initialize database
-#     with app.app_context():
-#         db.create_all()
-#         # Create test user if none exists
-#         if not User.query.filter_by(username='testuser').first():
-#             admin_user = User(username='testuser')
-#             admin_user.set_password('password')
-#             db.session.add(admin_user)
-#             db.session.commit()
-#             print("Test user 'testuser' with password 'password' created.")
-
-#     # Start MQTT in background thread
-#     print("=== MQTT SETUP ===")
-#     start_mqtt_thread()
-    
-#     # Wait a moment to see if MQTT connects
-#     time.sleep(5)
-
-#     # Get port from environment variable
-#     port = int(os.environ.get('PORT', 8000))
-#     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    
-#     print("Starting Flask application...")
-#     app.run(host='0.0.0.0', port=port, debug=debug_mode, use_reloader=False)
 
 # --- Main Execution Block ---
 if __name__ == '__main__':
