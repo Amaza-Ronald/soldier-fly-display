@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: soldier-fly-display
+    name: bsf-larvae-monitoring
     runtime: python
     repo: https://github.com/Amaza-Ronald/soldier-fly-display
     branch: main
