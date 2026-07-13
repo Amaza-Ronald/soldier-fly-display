@@ -930,11 +930,13 @@
         </header>
 
         <div class="tray-selector" id="tray-selector">
-            {% for tray_num, data in tray_data.items() %}
-            <button class="tray-btn" data-tray-number="{{ tray_num }}">Tray #{{ tray_num }}</button>
+            {% for upload_key, data in tray_data.items() %}
+            <button class="tray-btn" data-tray-number="{{ data.tray_number }}"{% if data.image_id is not none %} data-image-id="{{ data.image_id }}"{% endif %}>
+                Tray #{{ data.tray_number }} ({{ data.count }} larvae)
+            </button>
             {% endfor %}
             <button class="tray-btn" data-tray-number="0">Combined Trays</button>
-            <button class="tray-btn comparison-btn" data-tray-number="4">Compare All Trays</button>
+            <a href="/compare" class="tray-btn comparison-btn" style="display: inline-block; text-decoration: none; text-align: center;">Compare All Trays</a>
         </div>
 
         <!-- ADD THIS AS A FALLBACK (initially hidden) -->
@@ -942,32 +944,28 @@
             <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center;">
                 <select id="tray-dropdown" class="tray-dropdown">
                     <option value="">Select a Tray...</option>
-                    {% for tray_num, data in tray_data.items() %}
-                    <option value="{{ tray_num }}">Tray #{{ tray_num }}</option>
+                    {% for upload_key, data in tray_data.items() %}
+                    <option value="{{ data.tray_number }}"{% if data.image_id is not none %} data-image-id="{{ data.image_id }}"{% endif %}>
+                        Tray #{{ data.tray_number }} - {{ data.count }} larvae
+                    </option>
                     {% endfor %}
                 </select>
                 <!-- ADD THESE BUTTONS TO THE DROPDOWN CONTAINER -->
                 <button class="tray-btn" data-tray-number="0">Combined Trays</button>
-                <button class="tray-btn comparison-btn" data-tray-number="4">Compare All Trays</button>
+                <a href="/compare" class="tray-btn comparison-btn" style="display: inline-block; text-decoration: none; text-align: center;">Compare All Trays</a>
             </div>
-        </div>
-
-        <div class="chart-toggle-group">
-            <button class="chart-toggle-btn active" data-chart-mode="both">Length & Weight</button>
-            <button class="chart-toggle-btn" data-chart-mode="length">Length Only</button>
-            <button class="chart-toggle-btn" data-chart-mode="weight">Weight Only</button>
         </div>
 
         <div class="metrics-grid">
-            <div class="metric-card">
+            <div class="metric-card" style="display: none;">
                 <div class="metric-label">Average Length</div>
                 <div class="metric-value" id="length">0 <span class="unit">mm</span></div>
             </div>
-            <div class="metric-card">
+            <div class="metric-card" style="display: none;">
                 <div class="metric-label">Average Width</div>
                 <div class="metric-value" id="width">0 <span class="unit">mm</span></div>
             </div>
-            <div class="metric-card">
+            <div class="metric-card" style="display: none;">
                 <div class="metric-label">Average Area</div>
                 <div class="metric-value" id="area">0 <span class="unit">mm²</span></div>
             </div>
@@ -993,37 +991,6 @@
         </div>
     </div>
 
-    <div class="image-section">
-            <div class="section">
-                <div style ="display: flex; justify-content: space-between; align-items: center;">
-                    <h2 class="chart-title">Classified Images</h2>
-                    <div class="controls">
-                        <button class="refresh-btn" onclick="refreshImages()">
-                            <span class="refresh-icon">↻</span> Refresh
-                        </button>
-                        <select id="trayFilter" onchange="filterImages()">
-                            <option value="all">All Trays</option>
-                            {% for tray_num, data in tray_data.items() %}
-                            <option value="{{ tray_num }}">Tray {{ tray_num }}</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                </div>
-                <div class="chart-content">
-                    <div class="loading-indicator" id="imagesLoading">
-                        <div class="spinner"></div>
-                        <div>Loading classified images...</div>
-                    </div>
-                    <div class="images-grid" id="imagesGrid">
-                        </div>
-                    <div class="pagination-controls">
-                        <button class="pagination-btn" onclick="previousPage()" id="prevBtn">← Previous</button>
-                        <button class="pagination-btn" onclick="nextPage()" id="nextBtn">Next →</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
     <script>
         let growthChart;
         let weightChart;
@@ -1031,7 +998,7 @@
         let currentGrowthData = {};
         let currentWeightDistribution = {};
         let currentComparisonData = {};
-        let currentChartMode = 'both';
+        let currentChartMode = 'weight';
         let trayColors = {};
         let allImages = [];
         let filteredImages = [];
@@ -1090,7 +1057,10 @@
         return colors;
     }
 
+        // ===== SETUP EVENT LISTENERS IMMEDIATELY (SYNCHRONOUS) =====
         document.addEventListener('DOMContentLoaded', () => {
+            console.log('DOM loaded - setting up event listeners...');
+            
             const trayDataJson = `{{ tray_data | tojson | safe }}`;
             let parsedTrayData = {};
             try {
@@ -1102,50 +1072,115 @@
             const trayNumbers = Object.keys(parsedTrayData).map(Number);
             trayColors = generateTrayColors([0, ...trayNumbers, 4]);
             
+            console.log('Setting up button event listeners for', document.querySelectorAll('.tray-btn').length, 'buttons');
+            
+            // SYNCHRONOUS: Register all button click handlers immediately
             document.querySelectorAll('.tray-btn').forEach(button => {
-                button.addEventListener('click', () => {
+                button.addEventListener('click', (e) => {
+                    // Skip if it's a link (anchor tag) - let it navigate normally
+                    if (button.tagName === 'A') {
+                        return; // Don't prevent default, let it navigate
+                    }
+                    
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
                     const trayNumber = parseInt(button.dataset.trayNumber);
-                    updateDashboard(trayNumber, currentChartMode);
+                    const imageId = button.dataset.imageId;
+                    
+                    let viewType;
+                    if (trayNumber === 0) {
+                        viewType = 'combined';
+                    } else {
+                        viewType = 'tray';
+                    }
+                    
+                    // Fire and forget - don't await
+                    console.log('Button clicked - loading data for tray:', trayNumber);
+                    updateDashboard(trayNumber, currentChartMode, viewType, button);
                 });
             });
 
-                            // ===== DROPDOWN EVENT HANDLER =====
+            // SYNCHRONOUS: Register dropdown handler
             document.getElementById('tray-dropdown').addEventListener('change', function(event) {
                 const trayNumber = parseInt(event.target.value);
                 if (!isNaN(trayNumber)) {
+                    console.log('Dropdown changed - loading data for tray:', trayNumber);
                     updateDashboard(trayNumber, currentChartMode);
-                    // Also update the active state on ALL buttons (both in original selector and dropdown)
                     document.querySelectorAll('.tray-btn').forEach(btn => {
                         btn.classList.toggle('active', parseInt(btn.dataset.trayNumber) === trayNumber);
                     });
                 }
             });
 
+            // SYNCHRONOUS: Register chart toggle handlers
             document.querySelectorAll('.chart-toggle-btn').forEach(button => {
                 button.addEventListener('click', () => {
                     const mode = button.dataset.chartMode;
+                    console.log('Chart mode changed:', mode);
                     updateDashboard(currentSelectedTray, mode);
                 });
             });
 
+            // SYNCHRONOUS: Setup responsive selector
             setupResponsiveTraySelector();
 
-            const initialTray = trayNumbers.length > 0 ? trayNumbers[0] : 0;
-            updateDashboard(initialTray, currentChartMode);
+            console.log('All event listeners registered - buttons are now active');
 
-            loadImages(); // Initial load of images
-
+            // STEP 1: Load initial data FIRST
+            (async () => {
+                try {
+                    console.log('Step 1: Starting initial data load...');
+                    const recentImageId = document.querySelector('.tray-btn[data-image-id]')?.dataset.imageId;
+                    if (recentImageId && !isNaN(parseInt(recentImageId))) {
+                        await updateDashboard(recentImageId, currentChartMode, 'upload');
+                    } else {
+                        const initialTray = trayNumbers.length > 0 ? trayNumbers[0] : 0;
+                        await updateDashboard(initialTray, currentChartMode);
+                    }
+                    console.log('Step 1 COMPLETE: Data loaded');
+                    
+                    // IMAGES SECTION REMOVED - no longer loading images
+                    // console.log('Step 2: Starting image load...');
+                    // loadAllImages();
+                } catch (error) {
+                    console.error('Error in data load:', error);
+                    // Images section removed
+                    // loadAllImages();
+                }
+            })();
 
         });
 
-        async function updateDashboard(trayNumber, chartMode = null) {
+        async function updateDashboard(identifier, chartMode = null, viewType = 'tray', clickedButton = null) {
             try {
-                currentSelectedTray = trayNumber;
+                console.log('updateDashboard called for:', identifier, 'viewType:', viewType);
+                
+                // Clear charts immediately to prevent showing stale data
+                if (growthChart) {
+                    growthChart.destroy();
+                    growthChart = null;
+                }
+                if (weightChart) {
+                    weightChart.destroy();
+                    weightChart = null;
+                }
+                
+                // Show loading state immediately
+                document.getElementById('update-time').textContent = 'Loading...';
+                
+                currentSelectedTray = identifier;
                 if (chartMode) currentChartMode = chartMode;
 
+                // Update active state - only highlight the clicked button
                 document.querySelectorAll('.tray-btn').forEach(btn => {
-                    btn.classList.toggle('active', parseInt(btn.dataset.trayNumber) === trayNumber);
+                    btn.classList.remove('active');
                 });
+                
+                if (clickedButton) {
+                    clickedButton.classList.add('active');
+                }
+                
                 document.querySelectorAll('.chart-toggle-btn').forEach(btn => {
                     btn.classList.toggle('active', btn.dataset.chartMode === currentChartMode);
                 });
@@ -1153,37 +1188,49 @@
                 const growthChartContainer = document.getElementById('growthChartContainer');
                 const weightChartContainer = document.getElementById('weightChartContainer');
 
-                if (trayNumber === 4) {
-                    growthChartContainer.classList.add('comparison-view');
-                    weightChartContainer.classList.add('comparison-view');
-                    document.getElementById('growthChartTitle').textContent = 'Growth Trend Comparison (All Trays)';
-                    document.getElementById('weightChartTitle').textContent = 'Weight Distribution Comparison (All Trays)';
+                // Remove comparison-view class (no longer using it)
+                growthChartContainer.classList.remove('comparison-view');
+                weightChartContainer.classList.remove('comparison-view');
+                
+                const isCombined = identifier === 0 || identifier === '0';
+                const isUpload = viewType === 'upload';
+                
+                document.getElementById('growthChartTitle').textContent = isCombined ? 
+                    'Combined Growth Trend' : (isUpload ? `Upload Data` : `Growth Trend - Tray ${identifier}`);
+                document.getElementById('weightChartTitle').textContent = isCombined ? 
+                    'Combined Weight Distribution' : (isUpload ? `Weight Distribution` : `Weight Distribution - Tray ${identifier}`);
 
-                    const response = await fetch('/get_comparison_data');
-                    currentComparisonData = await response.json();
-                    
-                    updateComparisonCharts(currentComparisonData.trays, currentChartMode);
-                    updateMetricsDisplay(calculateAverageMetrics(currentComparisonData.trays));
-                    document.getElementById('update-time').textContent = new Date(currentComparisonData.timestamp).toLocaleString();
+                let endpoint;
+                if (isCombined) {
+                    endpoint = '/get_combined_tray_data';
+                } else if (isUpload) {
+                    endpoint = `/get_upload_data/${identifier}`;
                 } else {
-                    growthChartContainer.classList.remove('comparison-view');
-                    weightChartContainer.classList.remove('comparison-view');
-                    
-                    const isCombined = trayNumber === 0;
-                    document.getElementById('growthChartTitle').textContent = isCombined ? 
-                        'Combined Growth Trend' : `Growth Trend - Tray ${trayNumber}`;
-                    document.getElementById('weightChartTitle').textContent = isCombined ? 
-                        'Combined Weight Distribution' : `Weight Distribution - Tray ${trayNumber}`;
+                    endpoint = `/get_tray_data/${identifier}`;
+                }
+                
+                const response = await fetch(endpoint, { credentials: 'include' });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
 
-                    const endpoint = isCombined ? '/get_combined_tray_data' : `/get_tray_data/${trayNumber}`;
-                    const response = await fetch(endpoint);
+                // Handle combined view differently (multi-tray data)
+                if (isCombined && data.traysGrowthData) {
+                    currentGrowthData = data.traysGrowthData;  // Object with tray-specific data
+                    // For combined view weight distribution, just use the aggregated data
+                    currentWeightDistribution = data.weightDistribution || { ranges: [], counts: [] };
                     
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    
-                    const data = await response.json();
+                    updateMetricsDisplay(data.metrics || { length: 0, width: 0, area: 0, weight: 0, count: 0 });
+                    document.getElementById('update-time').textContent = data.timestamp ? 
+                        new Date(data.timestamp).toLocaleString() : 'N/A';
 
+                    updateGrowthChart(currentGrowthData, identifier, currentChartMode, isCombined);
+                    updateWeightChart(currentWeightDistribution, identifier);
+                } else {
+                    // Single tray or upload view - normal handling
                     currentGrowthData = data.growthData || { days: [], length: [], weight: [] };
                     currentWeightDistribution = data.weightDistribution || { ranges: [], counts: [] };
                     
@@ -1191,92 +1238,130 @@
                     document.getElementById('update-time').textContent = data.timestamp ? 
                         new Date(data.timestamp).toLocaleString() : 'N/A';
 
-                    updateGrowthChart(currentGrowthData, trayNumber, currentChartMode);
-                    updateWeightChart(currentWeightDistribution, trayNumber);
+                    updateGrowthChart(currentGrowthData, identifier, currentChartMode, isCombined);
+                    updateWeightChart(currentWeightDistribution, identifier);
                 }
             } catch (error) {
                 console.error('Error updating dashboard:', error);
                 updateMetricsDisplay({ length: 0, width: 0, area: 0, weight: 0, count: 0 });
                 updateGrowthChart({ days: [], length: [], weight: [] }, currentSelectedTray, currentChartMode);
                 updateWeightChart({ ranges: [], counts: [] }, currentSelectedTray);
-                document.getElementById('update-time').textContent = 'Error loading data';
+                // Check if it's a 404 (no data) or actual error
+                if (error.message && error.message.includes('404')) {
+                    document.getElementById('update-time').textContent = 'No data available';
+                } else {
+                    document.getElementById('update-time').textContent = 'Error loading data';
+                }
             }
         }
 
         function updateMetricsDisplay(metrics) {
-            document.getElementById('length').innerHTML = metrics.length.toFixed(1) + ' <span class="unit">mm</span>';
-            document.getElementById('width').innerHTML = metrics.width.toFixed(1) + ' <span class="unit">mm</span>';
-            document.getElementById('area').innerHTML = metrics.area.toFixed(1) + ' <span class="unit">mm²</span>';
-            document.getElementById('weight').innerHTML = metrics.weight.toFixed(1) + ' <span class="unit">mg</span>';
-            document.getElementById('count').innerHTML = metrics.count.toLocaleString();
+            // Check if all metrics are 0 (no data)
+            const hasData = metrics.count > 0;
+            
+            if (hasData) {
+                document.getElementById('length').innerHTML = metrics.length.toFixed(1) + ' <span class="unit">mm</span>';
+                document.getElementById('width').innerHTML = metrics.width.toFixed(1) + ' <span class="unit">mm</span>';
+                document.getElementById('area').innerHTML = metrics.area.toFixed(1) + ' <span class="unit">mm²</span>';
+                document.getElementById('weight').innerHTML = metrics.weight.toFixed(3) + ' <span class="unit">mg</span>';
+                document.getElementById('count').innerHTML = metrics.count.toLocaleString();
+            } else {
+                document.getElementById('length').innerHTML = '<span style="color: #95a5a6;">No data</span>';
+                document.getElementById('width').innerHTML = '<span style="color: #95a5a6;">No data</span>';
+                document.getElementById('area').innerHTML = '<span style="color: #95a5a6;">No data</span>';
+                document.getElementById('weight').innerHTML = '<span style="color: #95a5a6;">No data</span>';
+                document.getElementById('count').innerHTML = '<span style="color: #95a5a6;">0</span>';
+            }
         }
 
         function calculateAverageMetrics(traysData) {
             let totalLength = 0, totalWidth = 0, totalArea = 0, totalWeight = 0, totalCount = 0;
-            let actualTraysCounted = 0;
+            let totalLarvaeCount = 0; // Total number of individual larvae across all trays
 
             for (const trayNum in traysData) {
-                if (traysData[trayNum] && traysData[trayNum].latest && traysData[trayNum].latest.count > 0) {
-                    totalLength += traysData[trayNum].latest.length;
-                    totalWidth += traysData[trayNum].latest.width;
-                    totalArea += traysData[trayNum].latest.area;
-                    totalWeight += traysData[trayNum].latest.weight;
-                    totalCount += traysData[trayNum].latest.count;
-                    actualTraysCounted++;
+                if (traysData[trayNum] && traysData[trayNum].allWeights && traysData[trayNum].allWeights.length > 0) {
+                    const trayData = traysData[trayNum];
+                    const larvaeInTray = trayData.allWeights.length;
+                    
+                    // Sum all individual larvae metrics (multiply latest by count for approximation)
+                    // Or better: calculate from allWeights array
+                    for (let i = 0; i < larvaeInTray; i++) {
+                        totalWeight += trayData.allWeights[i];
+                        totalLength += trayData.latest.length; // Approximate with latest
+                        totalWidth += trayData.latest.width;   // Approximate with latest
+                        totalArea += trayData.latest.area;     // Approximate with latest
+                    }
+                    
+                    totalCount += trayData.latest.count;
+                    totalLarvaeCount += larvaeInTray;
                 }
             }
 
-            if (actualTraysCounted === 0) {
+            if (totalLarvaeCount === 0) {
                 return { length: 0, width: 0, area: 0, weight: 0, count: 0 };
             }
 
             return {
-                length: totalLength / actualTraysCounted,
-                width: totalWidth / actualTraysCounted,
-                area: totalArea / actualTraysCounted,
-                weight: totalWeight / actualTraysCounted,
+                length: totalLength / totalLarvaeCount,
+                width: totalWidth / totalLarvaeCount,
+                area: totalArea / totalLarvaeCount,
+                weight: totalWeight / totalLarvaeCount,
                 count: totalCount
             };
         }
 
-        function updateGrowthChart(data, currentTrayNumber, chartMode) {
+        function updateGrowthChart(data, currentTrayNumber, chartMode, isCombined = false) {
             const ctx = document.getElementById('growthChart').getContext('2d');
             if (growthChart) {
                 growthChart.destroy();
             }
 
-            const borderColor = trayColors[currentTrayNumber] || '#3498db';
-            const backgroundColor = `${borderColor}20`;
-
             const datasets = [];
+            
+            // Generate dynamic colors for multiple trays
+            const generateColor = (index, total) => {
+                const hue = (index * 360 / total) % 360;
+                return `hsl(${hue}, 70%, 50%)`;
+            };
 
-            if (chartMode === 'both' || chartMode === 'length') {
-                datasets.push({
-                    label: `Length (mm) - Tray ${currentTrayNumber === 0 ? 'Combined' : currentTrayNumber}`,
-                    data: data.length,
-                    borderColor: borderColor,
-                    backgroundColor: backgroundColor,
-                    borderWidth: 3,
-                    tension: 0.3,
-                    yAxisID: 'y',
-                    pointRadius: 3,
-                    pointBackgroundColor: borderColor
+            // Handle combined view with multiple tray lines
+            if (isCombined && typeof data === 'object' && !Array.isArray(data.weight)) {
+                const trayNumbers = Object.keys(data);
+                const totalTrays = trayNumbers.length;
+                
+                trayNumbers.forEach((trayNum, index) => {
+                    const trayData = data[trayNum];
+                    const color = generateColor(index, totalTrays);
+                    
+                    datasets.push({
+                        label: `Weight (mg) - Tray ${trayNum}`,
+                        data: trayData.weight,
+                        borderColor: color,
+                        backgroundColor: `${color}20`,
+                        borderWidth: 3,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointBackgroundColor: color
+                    });
                 });
-            }
+            } else {
+                // Single tray view
+                const borderColor = trayColors[currentTrayNumber] || '#3498db';
+                const backgroundColor = `${borderColor}20`;
 
-            if (chartMode === 'both' || chartMode === 'weight') {
-                datasets.push({
-                    label: `Weight (mg) - Tray ${currentTrayNumber === 0 ? 'Combined' : currentTrayNumber}`,
-                    data: data.weight,
-                    borderColor: borderColor,
-                    backgroundColor: backgroundColor,
-                    borderWidth: 3,
-                    tension: 0.3,
-                    yAxisID: 'y1',
-                    borderDash: [5, 5],
-                    pointRadius: 3,
-                    pointBackgroundColor: borderColor
-                });
+                if (chartMode === 'both' || chartMode === 'weight') {
+                    datasets.push({
+                        label: `Weight (mg) - Tray ${currentTrayNumber === 0 ? 'Combined' : currentTrayNumber}`,
+                        data: data.weight,
+                        borderColor: borderColor,
+                        backgroundColor: backgroundColor,
+                        borderWidth: 3,
+                        tension: 0.3,
+                        borderDash: [5, 5],
+                        pointRadius: 4,
+                        pointBackgroundColor: borderColor
+                    });
+                }
             }
 
 
@@ -1285,7 +1370,7 @@
                 x: {
                     title: {
                         display: true,
-                        text: 'Days'
+                        text: 'Hours'
                     }
                 }
             };
@@ -1354,10 +1439,20 @@
                 };
             }
 
+            // Get x-axis labels (hours)
+            let xLabels;
+            if (isCombined && typeof data === 'object' && !Array.isArray(data.weight)) {
+                // For combined view, use the first tray's days as labels
+                const firstTrayData = data[Object.keys(data)[0]];
+                xLabels = firstTrayData.days.map(day => `Hour ${day}`);
+            } else {
+                xLabels = data.days.map(day => `Hour ${day}`);
+            }
+
             growthChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: data.days.map(day => `Day ${day}`),
+                    labels: xLabels,
                     datasets: datasets
                 },
                 options: {
@@ -1432,8 +1527,9 @@
                 weightChart.destroy();
             }
 
-            const borderColor = trayColors[currentTrayNumber] || 'rgba(39, 174, 96, 1)';
-            const backgroundColor = `${borderColor}B3`;
+            // Use consistent green color for all trays
+            const borderColor = 'rgba(39, 174, 96, 1)';
+            const backgroundColor = 'rgba(39, 174, 96, 0.7)';
 
             weightChart = new Chart(ctx, {
                 type: 'line',
@@ -1657,7 +1753,8 @@
             const weightCtx = document.getElementById('weightChart').getContext('2d');
             if (weightChart) weightChart.destroy();
 
-            const weightLabels = ["80-90", "90-100", "100-110", "110-120", "120-130", "130-140", "140+"];
+            // Updated labels to match actual larva weight range (milligrams)
+            const weightLabels = ["0.08-0.10", "0.10-0.12", "0.12-0.14", "0.14-0.16", "0.16-0.18", "0.18-0.20", "0.20+"];
             const weightDatasets = [];
 
             for (const trayNum in traysData) {
@@ -1730,15 +1827,16 @@
                 return bins;
             }
 
+            // Corrected bins for actual weight range (milligrams): 0.08-0.18 mg
             weightsArray.forEach(w => {
                 let binIndex = -1;
-                if (w >= 80 && w < 90) binIndex = 0;
-                else if (w >= 90 && w < 100) binIndex = 1;
-                else if (w >= 100 && w < 110) binIndex = 2;
-                else if (w >= 110 && w < 120) binIndex = 3;
-                else if (w >= 120 && w < 130) binIndex = 4;
-                else if (w >= 130 && w < 140) binIndex = 5;
-                else if (w >= 140) binIndex = 6;
+                if (w >= 0.08 && w < 0.10) binIndex = 0;      // 0.08-0.10 mg
+                else if (w >= 0.10 && w < 0.12) binIndex = 1; // 0.10-0.12 mg
+                else if (w >= 0.12 && w < 0.14) binIndex = 2; // 0.12-0.14 mg
+                else if (w >= 0.14 && w < 0.16) binIndex = 3; // 0.14-0.16 mg
+                else if (w >= 0.16 && w < 0.18) binIndex = 4; // 0.16-0.18 mg
+                else if (w >= 0.18 && w < 0.20) binIndex = 5; // 0.18-0.20 mg
+                else if (w >= 0.20) binIndex = 6;              // 0.20+ mg
 
                 if (binIndex !== -1) {
                     bins[binIndex]++;
@@ -1932,7 +2030,7 @@ function renderImages(images) {
                 <span class="metric">Tray: ${image.tray}</span>
                 <span class="metric">Count: ${image.count}</span>
                 <span class="metric">Avg Length: ${image.avgLength ? image.avgLength.toFixed(1) : 'N/A'}mm</span>
-                <span class="metric">Avg Weight: ${image.avgWeight ? image.avgWeight.toFixed(1) : 'N/A'}mg</span>
+                <span class="metric">Avg Weight: ${image.avgWeight ? image.avgWeight.toFixed(3) : 'N/A'}mg</span>
                 <span class="metric">Size: ${(image.size / 1024).toFixed(1)}KB</span>
             </div>
             <div class="timestamp">
@@ -1969,6 +2067,51 @@ function renderImages(images) {
 //     }
 // }
 
+// Load all images once (user can filter with dropdown)
+async function loadAllImages() {
+    try {
+        document.getElementById('imagesLoading').style.display = 'flex';
+        document.getElementById('imagesGrid').innerHTML = '';
+        
+        console.log('Loading all images...');
+        const response = await fetch(`/api/images/all`, { credentials: 'include' });
+        
+        // Check content type before parsing
+        const contentType = response.headers.get('content-type');
+        console.log('Response content-type:', contentType, 'status:', response.status);
+        
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            console.error('Expected JSON but got:', text.substring(0, 200));
+            throw new Error('Session expired or not authenticated. Please refresh and login again.');
+        }
+        
+        if (response.ok) {
+            allImages = await response.json();
+            console.log(`Loaded ${allImages.length} total images`);
+            filteredImages = [...allImages];
+            
+            // Reset to page 1
+            currentPage = 1;
+            
+            // Render the grid
+            renderImagesGrid();
+            
+            // Update pagination controls
+            updatePaginationControls();
+        } else {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+    } catch (error) {
+        console.error('Error loading images:', error);
+        document.getElementById('imagesGrid').innerHTML = 
+            '<div style="text-align: center; color: #e74c3c; padding: 20px;">Error loading images</div>';
+    } finally {
+        document.getElementById('imagesLoading').style.display = 'none';
+    }
+}
+
 // SAFE: Optimize image loading without breaking API
 async function loadImages() {
     try {
@@ -1976,13 +2119,29 @@ async function loadImages() {
         document.getElementById('imagesGrid').innerHTML = '';
         
         const trayFilter = document.getElementById('trayFilter').value;
-        const response = await fetch(`/api/images/${trayFilter}`);
+        console.log(`Fetching images for tray: ${trayFilter}`);
+        const response = await fetch(`/api/images/${trayFilter}`, { credentials: 'include' });
         
+        // Check content type before parsing
+        const contentType = response.headers.get('content-type');
+        console.log('Response content-type:', contentType, 'status:', response.status);
+        
+        if (!contentType || !contentType.includes('application/json')) {
+            const text = await response.text();
+            console.error('Expected JSON but got:', text.substring(0, 200));
+            throw new Error('Session expired or not authenticated. Please refresh and login again.');
+        }
+        
+        console.log(`Response status: ${response.status}`);
         if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Response error:', errorText);
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         
-        allImages = await response.json();
+        const responseText = await response.text();
+        console.log('Response text:', responseText.substring(0, 200));
+        allImages = JSON.parse(responseText);
         //Initialize filteredImages when loading
         filteredImages = [...allImages];
         
@@ -2519,8 +2678,8 @@ function refreshCurrentView() {
 document.addEventListener('DOMContentLoaded', () => {
     // ... your existing DOMContentLoaded code ...
     
-    // Start real-time connection
-    connectToEventStream();
+    // DISABLED: Start real-time connection (causing ERR_INCOMPLETE_CHUNKED_ENCODING)
+    // connectToEventStream();
 });
 
 // Clean up when page unloads

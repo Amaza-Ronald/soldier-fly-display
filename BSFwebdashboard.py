@@ -2,7 +2,7 @@
 
 from flask import Flask, render_template, request, redirect, url_for, jsonify, session, flash, send_file, Response
 from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -25,6 +25,11 @@ import gc
 import uuid
 import collections
 from collections import OrderedDict
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import random
+import string
 
 
 # # --- Flask App Configuration ---
@@ -226,7 +231,11 @@ def broadcast_to_clients(data):
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=True)
     password_hash = db.Column(db.Text, nullable=False)  # CHANGED: String → Text (unlimited length)
+    is_verified = db.Column(db.Boolean, default=False)
+    verification_code = db.Column(db.String(6), nullable=True)
+    verification_code_expires = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def set_password(self, password):
@@ -234,16 +243,31 @@ class User(UserMixin, db.Model):
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+    
+    def generate_verification_code(self):
+        """Generate a 6-digit verification code"""
+        self.verification_code = ''.join(random.choices(string.digits, k=6))
+        self.verification_code_expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+        return self.verification_code
+    
+    def verify_code(self, code):
+        """Check if verification code is valid and not expired"""
+        if not self.verification_code or not self.verification_code_expires:
+            return False
+        if datetime.now(timezone.utc) > self.verification_code_expires:
+            return False
+        return self.verification_code == code
 
 class ImageFile(db.Model):
     __tablename__ = "image_files"
     id = db.Column(db.Integer, primary_key=True)
     tray_number = db.Column(db.Integer, nullable=False,index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     
-    # Use LargeBinary for PostgreSQL BYTEA
-    image_data = db.Column(db.LargeBinary, nullable=False)
-    image_format = db.Column(db.String(10), nullable=False)
-    image_size = db.Column(db.Integer, nullable=False)
+    # Use LargeBinary for PostgreSQL BYTEA - MADE OPTIONAL
+    image_data = db.Column(db.LargeBinary, nullable=True)
+    image_format = db.Column(db.String(10), nullable=True)
+    image_size = db.Column(db.Integer, nullable=True)
     
     # Metadata
     timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),index=True)
@@ -258,6 +282,7 @@ class ImageFile(db.Model):
     # ADDED: Composite index for common queries
     __table_args__ = (
         db.Index('idx_image_tray_timestamp', 'tray_number', 'timestamp'),
+        db.Index('idx_image_user_tray', 'user_id', 'tray_number'),
     )
 
     def __repr__(self):
@@ -267,6 +292,7 @@ class LarvaeData(db.Model):
     __tablename__ = "larvae_data"
     id = db.Column(db.Integer, primary_key=True)
     tray_number = db.Column(db.Integer, nullable=False,index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     length = db.Column(db.Float, nullable=False)
     width = db.Column(db.Float, nullable=False)
     area = db.Column(db.Float, nullable=False)
@@ -277,6 +303,7 @@ class LarvaeData(db.Model):
     # ADDED: Composite index for common queries
     __table_args__ = (
         db.Index('idx_larvae_tray_timestamp', 'tray_number', 'timestamp'),
+        db.Index('idx_larvae_user_tray', 'user_id', 'tray_number'),
     )
 
     def __repr__(self):
@@ -319,18 +346,31 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
+        
+        if not username or not password:
+            flash('Please enter both username and password', 'danger')
+            return render_template('login.html')
+        
         user = User.query.filter_by(username=username).first()
 
-        if user and user.check_password(password):
-            login_user(user)
-            flash('Login successful!', 'success')
-            return redirect(url_for('dashboard'))
-        flash('Invalid username or password', 'danger')
+        if not user:
+            flash('Account does not exist. Please register first.', 'danger')
+            return render_template('login.html')
+        
+        if not user.check_password(password):
+            flash('Incorrect password. Please try again.', 'danger')
+            return render_template('login.html')
+        
+        # Login successful
+        login_user(user)
+        flash('Login successful!', 'success')
+        return redirect(url_for('dashboard'))
+        
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    """Handles new user registration."""
+    """Handles new user registration without email."""
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
@@ -342,10 +382,16 @@ def register():
         try:
             user = User(username=username)
             user.set_password(password)
+            user.is_verified = True # Auto-verify since removed email
+            
             db.session.add(user)
             db.session.commit()
-            flash('Registration successful! Please login.', 'success')
-            return redirect(url_for('login'))
+            
+            # Log the user in automatically after registration
+            login_user(user)
+            flash('Registration successful! Welcome to your dashboard.', 'success')
+            return redirect(url_for('dashboard'))
+                
         except Exception as e:
             db.session.rollback()
             flash(f'Registration failed: {e}. Please try again.', 'danger')
@@ -353,57 +399,140 @@ def register():
     return render_template('register.html')
 
 
+@app.route('/verify_email/<int:user_id>', methods=['GET', 'POST'])
+def verify_email(user_id):
+    """Handles email verification with 6-digit code."""
+    user = User.query.get(user_id)
+    if not user:
+        flash('User not found', 'danger')
+        return redirect(url_for('register'))
+    
+    if user.is_verified:
+        flash('Email already verified. Please login.', 'info')
+        return redirect(url_for('login'))
+    
+    # Check if email was sent (from query param)
+    email_sent = request.args.get('code_sent', 'true').lower() == 'true'
+    show_code = not email_sent  # Show code on page if email wasn't sent
+    
+    if request.method == 'POST':
+        code = request.form.get('code')
+        
+        if user.verify_code(code):
+            user.is_verified = True
+            user.verification_code = None
+            user.verification_code_expires = None
+            db.session.commit()
+            flash('Email verified successfully! You can now login.', 'success')
+            return redirect(url_for('login'))
+        else:
+            flash('Invalid or expired verification code. Please try again.', 'danger')
+    
+    return render_template('verify_email.html', user=user, show_code=show_code)
 
-@app.route('/image/<int:image_id>')
-def get_image(image_id):
+
+@app.route('/resend_code/<int:user_id>', methods=['POST'])
+def resend_verification_code(user_id):
+    """Resend verification code to user's email."""
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+    
+    if user.is_verified:
+        return jsonify({'success': False, 'message': 'Email already verified'}), 400
+    
     try:
-        image_file = ImageFile.query.get(image_id)
-        if not image_file:
-            return "Image not found", 404
-            
-        response = send_file(
-            BytesIO(image_file.image_data), 
-            mimetype=f'image/{image_file.image_format}'
-        )
+        verification_code = user.generate_verification_code()
+        db.session.commit()
         
-        # ADD CACHE HEADERS - Prevents multiple requests
-        response.headers['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
-        response.headers['Expires'] = (datetime.utcnow() + timedelta(hours=1)).strftime('%a, %d %b %Y %H:%M:%S GMT')
+        email_sent = send_verification_email(user.email, verification_code)
         
-        return response
+        if email_sent:
+            return jsonify({'success': True, 'message': 'Verification code sent to your email'})
+        else:
+            # If email fails, return the code in the response
+            return jsonify({
+                'success': True, 
+                'message': f'Email service unavailable. Your verification code is: {verification_code}',
+                'show_code': True,
+                'code': verification_code
+            })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+def send_verification_email(email, code):
+    """Send verification code via email using SMTP."""
+    # Always print code to console for debugging
+    print(f"\n{'='*60}")
+    print(f"📧 VERIFICATION CODE for {email}: {code}")
+    print(f"{'='*60}\n")
+    
+    try:
+        # Email configuration - replace with your SMTP settings
+        smtp_server = os.environ.get('SMTP_SERVER', '')
+        smtp_port = int(os.environ.get('SMTP_PORT', 587))
+        smtp_username = os.environ.get('SMTP_USERNAME', '')
+        smtp_password = os.environ.get('SMTP_PASSWORD', '')
+        from_email = os.environ.get('FROM_EMAIL', smtp_username)
+        
+        if not smtp_server or not smtp_username or not smtp_password:
+            print("⚠️ SMTP not configured. Code displayed above.")
+            return False
+        
+        # Create message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = 'Email Verification - BSF Larvae Monitoring'
+        msg['From'] = from_email
+        msg['To'] = email
+        
+        # HTML email body
+        html = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; padding: 20px;">
+            <div style="max-width: 600px; margin: 0 auto; background-color: #f9f9f9; padding: 30px; border-radius: 10px;">
+              <h2 style="color: #3498db;">Email Verification</h2>
+              <p>Thank you for registering with BSF Larvae Monitoring Dashboard!</p>
+              <p>Your verification code is:</p>
+              <div style="background-color: #3498db; color: white; font-size: 32px; font-weight: bold; padding: 20px; text-align: center; border-radius: 5px; letter-spacing: 5px;">
+                {code}
+              </div>
+              <p style="margin-top: 20px;">This code will expire in 15 minutes.</p>
+              <p style="color: #7f8c8d; font-size: 12px;">If you didn't request this code, please ignore this email.</p>
+            </div>
+          </body>
+        </html>
+        """
+        
+        msg.attach(MIMEText(html, 'html'))
+        
+        # Send email
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+            server.send_message(msg)
+        
+        print(f"✅ Verification email sent to {email}")
+        return True
         
     except Exception as e:
-        print(f"Error loading image {image_id}: {str(e)}")
-        return "Error loading image", 500
+        print(f"❌ Failed to send verification email: {e}")
+        print(f"Verification code for {email}: {code}")
+        return False
+
+
+
+@app.route('/image/<int:image_id>')
+@login_required
+def get_image(image_id):
+    return "Images are disabled", 404
 
 
 @app.route('/image_thumbnail/<int:image_id>')
 @login_required
 def get_image_thumbnail(image_id):
-    """Serve resized thumbnail from database BLOB"""
-    try:
-        image_file = ImageFile.query.get_or_404(image_id)
-        
-        # Create thumbnail
-        img = Image.open(BytesIO(image_file.image_data))
-        img.thumbnail((300, 300))  # Create thumbnail
-        
-        # Convert back to bytes
-        output = BytesIO()
-        img.save(output, format=image_file.image_format.upper())
-        thumbnail_data = output.getvalue()
-        
-        return Response(
-            thumbnail_data,
-            mimetype=f'image/{image_file.image_format}',
-            headers={
-                'Content-Length': len(thumbnail_data),
-                'Cache-Control': 'public, max-age=3600'
-            }
-        )
-    except Exception as e:
-        app.logger.error(f"Error serving thumbnail {image_id}: {e}")
-        return jsonify({"error": "Thumbnail not found"}), 404
+    """Image thumbnails are disabled."""
+    return jsonify({"error": "Images are disabled"}), 404
 
 # # CHANGED: Updated image API to work with BLOB storage
 # @app.route('/api/images/<tray_number>')
@@ -442,58 +571,8 @@ def get_image_thumbnail(image_id):
 @app.route('/api/images/<tray_number>')
 @login_required
 def get_images(tray_number):
-    """Get images from database - OPTIMIZED VERSION"""
-    try:
-        
-        # Select only the columns we need
-        query = ImageFile.query.options(
-            load_only(
-                ImageFile.id,
-                ImageFile.tray_number,
-                ImageFile.image_data,  # Keep this for base64 fallback
-                ImageFile.image_format,
-                ImageFile.timestamp,
-                ImageFile.count,
-                ImageFile.avg_length,
-                ImageFile.avg_weight,
-                ImageFile.bounding_boxes,
-                ImageFile.masks,
-                ImageFile.image_size
-            )
-        )
-        
-        if tray_number == 'all':
-            images = query.order_by(ImageFile.timestamp.desc()).limit(6).all()
-        else:
-            images = query.filter_by(tray_number=int(tray_number))\
-                         .order_by(ImageFile.timestamp.desc())\
-                         .limit(6).all()
-        
-        image_list = []
-        for img in images: 
-            # KEEP BOTH: URL for compatibility AND base64 for performance
-            image_url = url_for('get_image', image_id=img.id)
-            thumbnail_url = url_for('get_image_thumbnail', image_id=img.id)
-            
-            image_list.append({
-                "id": img.id,
-                "tray": img.tray_number,
-                "src": image_url,  # Keep original URL for compatibility
-                "src_base64": None,  # Optional: add later if needed
-                "thumbnail": thumbnail_url,
-                "timestamp": img.timestamp.isoformat(),
-                "count": img.count,
-                "avgLength": img.avg_length,
-                "avgWeight": img.avg_weight,
-                "bounding_boxes": json.loads(img.bounding_boxes) if img.bounding_boxes else [],
-                "masks": json.loads(img.masks) if img.masks else [],
-                "size": img.image_size,
-                "format": img.image_format
-            })
-        return jsonify(image_list)
-    except Exception as e:
-        print(f"Error fetching images: {e}")
-        return jsonify([])
+    """Images are optional/disabled; return empty list so dashboard still works."""
+    return jsonify([])
 
 
 
@@ -553,111 +632,154 @@ def get_images(tray_number):
 
 # Add this route to your existing Flask routes
 @app.route('/api/upload', methods=['POST'])
-#@login_required
 def upload_image():
-    """Handle image upload and store in database as BLOB"""
+    """Handle image upload and store in database as BLOB - requires authentication"""
     try:
+        # Check for authentication (username and password in JSON)
         data = request.get_json()
         if not data:
             return jsonify({"error": "No data provided"}), 400
+        
+        username = data.get('username')
+        password = data.get('password')
+        
+        if not username or not password:
+            return jsonify({"error": "Authentication required: username and password must be provided"}), 401
+        
+        # Authenticate user
+        user = User.query.filter_by(username=username).first()
+        if not user or not user.check_password(password):
+            return jsonify({"error": "Invalid credentials"}), 401
+        
+        # Email verification is no longer required. Auto-heal older accounts
+        # that may still have is_verified=False from previous flows.
+        if not user.is_verified:
+            user.is_verified = True
+            db.session.commit()
 
         image_data = data.get('image_data')
+
+        def _to_int(value, default=0):
+            try:
+                if value is None or value == "":
+                    return default
+                return int(value)
+            except (ValueError, TypeError):
+                return default
+
+        def _to_float(value, default=0.0):
+            try:
+                if value is None or value == "":
+                    return default
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
         tray_number = data.get('tray_number')
-        count = data.get('count', 0)
-        avg_length = data.get('avg_length', 0)
-        avg_weight = data.get('avg_weight', 0)
+        if tray_number is None or str(tray_number).strip() == "":
+            tray_number = data.get('tray_id')
+        if tray_number is None or str(tray_number).strip() == "":
+            tray_number = data.get('tray')
+        count = _to_int(data.get('count', 0), 0)
+        avg_length = _to_float(data.get('avg_length', 0), 0.0)
+        avg_width = _to_float(data.get('avg_width', 0), 0.0)
+        avg_area = _to_float(data.get('avg_area', 0), 0.0)
+        avg_weight = _to_float(data.get('avg_weight', 0), 0.0)
+        individual_weights = data.get('individual_weights', [])
+        if not isinstance(individual_weights, list):
+            individual_weights = []
+        individual_weights = [_to_float(w, None) for w in individual_weights]
+        individual_weights = [w for w in individual_weights if w is not None]
         bounding_boxes_json = data.get('bounding_boxes', '[]')
         masks_json = data.get('masks', '[]')
         
-        if not image_data or not tray_number:
-            return jsonify({"error": "Missing image data or tray number"}), 400
+        if tray_number is None or str(tray_number).strip() == "":
+            return jsonify({"error": "Missing tray ID. Use one of: tray_number, tray_id, tray"}), 400
 
-        # Decode the base64 image
         try:
-            image_binary = base64.b64decode(image_data)
-        except Exception as e:
-            return jsonify({"error": "Invalid image data"}), 400
+            tray_number = int(tray_number)
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid tray ID. It must be a number"}), 400
 
-        # Process image for BLOB storage
-        try:
-            img = Image.open(BytesIO(image_binary))
-            image_format = img.format.lower() if img.format else 'jpeg'
-            image_size = len(image_binary)
-            
-            # Compress if too large (optional)
-            if image_size > 2 * 1024 * 1024:  # 2MB
-                output = BytesIO()
-                img.save(output, format='JPEG', quality=85, optimize=True)
-                image_binary = output.getvalue()
-                image_size = len(image_binary)
-                image_format = 'jpeg'
-        except Exception as e:
-            return jsonify({"error": "Invalid image format"}), 400
+        # Process image if provided (make it optional)
+        image_binary = None
+        image_format = None
+        image_size = None
         
-        # Create ImageFile entry with BLOB data
-        try:
-            new_image = ImageFile(
+        if image_data:
+            # Decode the base64 image
+            try:
+                image_binary = base64.b64decode(image_data)
+            except Exception as e:
+                return jsonify({"error": "Invalid image data"}), 400
+
+            # Process image for BLOB storage
+            try:
+                img = Image.open(BytesIO(image_binary))
+                image_format = img.format.lower() if img.format else 'jpeg'
+                image_size = len(image_binary)
+                
+                # Compress if too large (optional)
+                if image_size > 2 * 1024 * 1024:  # 2MB
+                    output = BytesIO()
+                    img.save(output, format='JPEG', quality=85, optimize=True)
+                    image_binary = output.getvalue()
+                    image_size = len(image_binary)
+                    image_format = 'jpeg'
+            except Exception as e:
+                return jsonify({"error": "Invalid image format"}), 400
+        else:
+            print(f"⚠️ No image provided for Tray {tray_number} - storing data only")
+        
+        # NEW: Save individual larvae data for weight distribution
+        if individual_weights and len(individual_weights) > 0:
+            print(f"💾 Saving {len(individual_weights)} individual larvae entries for Tray {tray_number}")
+            for weight in individual_weights:
+                larvae_entry = LarvaeData(
+                    tray_number=tray_number,
+                    user_id=user.id,
+                    length=avg_length,
+                    width=avg_width,
+                    area=avg_area,
+                    weight=weight,  # Individual weight
+                    count=1,  # Each entry is one larva
+                    timestamp=datetime.now(timezone.utc)
+                )
+                db.session.add(larvae_entry)
+        
+        # If individual weights are missing, still store one summary data point
+        if not individual_weights:
+            larvae_entry = LarvaeData(
                 tray_number=tray_number,
-                image_data=image_binary,
-                image_format=image_format,
-                image_size=image_size,
-                count=count,
-                avg_length=avg_length,
-                avg_weight=avg_weight,
-                bounding_boxes=bounding_boxes_json,
-                masks=masks_json
+                user_id=user.id,
+                length=avg_length,
+                width=avg_width,
+                area=avg_area,
+                weight=avg_weight,
+                count=count if count else 0,
+                timestamp=datetime.now(timezone.utc)
             )
-            
-            db.session.add(new_image)
+            db.session.add(larvae_entry)
+
+        try:
             db.session.commit()
 
-            # # ✅ NEW: BROADCAST IMAGE UPLOAD TO ALL CONNECTED CLIENTS
-            # update_data = {
-            #     'type': 'new_image',
-            #     'tray_number': tray_number,
-            #     'timestamp': datetime.now(timezone.utc).isoformat(),
-            #     'image_id': new_image.id,
-            #     'count': count,
-            #     'avg_length': avg_length,
-            #     'avg_weight': avg_weight
-            # }
-            
-            # # Broadcast to all connected clients
-            # for client in connected_clients[:]:
-            #     try:
-            #         client_queue, last_id = client
-            #         client_queue.put(update_data)
-            #     except Exception as e:
-            #         print(f"❌ Error sending to client: {e}")
-            #         connected_clients.remove(client)
-            
-            # return jsonify({
-            #     "message": "Image saved to database successfully",
-            #     "image_id": new_image.id,
-            #     "size": image_size,
-            #     "tray_number": tray_number
-            # }), 200
-
-
-            # ✅ NEW: BROADCAST IMAGE UPLOAD TO ALL CONNECTED CLIENTS
             update_data = {
-                'type': 'new_image',
+                'type': 'new_data',
                 'tray_number': tray_number,
                 'timestamp': datetime.now(timezone.utc).isoformat(),
-                'image_id': new_image.id,
+                'image_id': None,
                 'count': count,
                 'avg_length': avg_length,
                 'avg_weight': avg_weight
             }
-            
-            # Broadcast to all connected clients using broadcast_to_clients function
+
             broadcast_to_clients(update_data)
-            
+
             return jsonify({
-                "message": "Image saved to database successfully",
-                "image_id": new_image.id,
-                "size": image_size,
-                "tray_number": tray_number
+                "message": "Data saved successfully",
+                "tray_number": tray_number,
+                "image_saved": False
             }), 200
 
         except Exception as e:
@@ -668,71 +790,158 @@ def upload_image():
         print(f"Error during image upload: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
-@app.route('/get_tray_data/<int:tray_number>')
+@app.route('/get_upload_data/<int:image_id>')
 @login_required
-def get_tray_data(tray_number):
+def get_upload_data(image_id):
     """
-    Fetches and processes historical data for a specific tray,
-    including growth data and weight distribution.
+    Fetches data for a specific upload/image (by image_id) for current user.
+    This shows only the larvae data associated with that specific upload.
     """
     try:
-        # Get all historical data for the specified tray, ordered by timestamp
-        tray_data = LarvaeData.query.filter_by(tray_number=tray_number)\
-                                  .order_by(LarvaeData.timestamp.asc())\
-                                  .all()
+        # Get the image to verify ownership and get tray number
+        image = ImageFile.query.filter_by(id=image_id, user_id=current_user.id).first()
+        if not image:
+            return jsonify({"error": "Image not found or access denied"}), 404
+        
+        # Get larvae data for this specific upload (same tray, same timestamp window)
+        # We'll get data within 1 minute of the image upload time
+        from datetime import timedelta
+        time_window_start = image.timestamp - timedelta(minutes=1)
+        time_window_end = image.timestamp + timedelta(minutes=1)
+        
+        upload_data = LarvaeData.query.filter_by(
+            tray_number=image.tray_number,
+            user_id=current_user.id
+        ).filter(
+            LarvaeData.timestamp >= time_window_start,
+            LarvaeData.timestamp <= time_window_end
+        ).order_by(LarvaeData.timestamp.asc()).all()
 
-        if not tray_data:
-            return jsonify({"error": f"No data found for tray {tray_number}"}), 404
+        if not upload_data:
+            return jsonify({"error": f"No data found for upload {image_id}"}), 404
 
-        # Process growth data (latest entry per day)
-        growth_data = {"days": [], "length": [], "weight": []}
-        daily_data = {}
+        # Process growth data (for single upload, just one data point)
+        growth_data = {"days": [1], "length": [], "weight": []}
+        
+        # Calculate averages for this upload
+        avg_length = sum(e.length for e in upload_data) / len(upload_data)
+        avg_weight = sum(e.weight for e in upload_data) / len(upload_data)
+        growth_data["length"].append(round(avg_length, 1))
+        growth_data["weight"].append(round(avg_weight, 3))
 
-        if tray_data:
-            start_date = tray_data[0].timestamp.date()
-            for entry in tray_data:
-                day_number = (entry.timestamp.date() - start_date).days + 1
-                daily_data[day_number] = entry  # Keep latest entry per day
+        # Get metrics
+        total_count = len(upload_data)  # Each entry is 1 larva
 
-            for day in sorted(daily_data.keys()):
-                entry = daily_data[day]
-                growth_data["days"].append(day)
-                growth_data["length"].append(round(entry.length, 1))
-                growth_data["weight"].append(round(entry.weight, 1))
-
-        # Get latest metrics for the tray
-        latest_entry = tray_data[-1] if tray_data else None
-
-        # Calculate weight distribution for all data in the tray
+        # Calculate weight distribution
         weight_bins = {
-            "80-90": 0, "90-100": 0, "100-110": 0,
-            "110-120": 0, "120-130": 0, "130-140": 0, "140+": 0
+            "0.08-0.10": 0, "0.10-0.12": 0, "0.12-0.14": 0,
+            "0.14-0.16": 0, "0.16-0.18": 0, "0.18-0.20": 0, "0.20+": 0
         }
 
-        for entry in tray_data:
+        for entry in upload_data:
             weight = entry.weight
-            if 80 <= weight < 90: weight_bins["80-90"] += 1
-            elif 90 <= weight < 100: weight_bins["90-100"] += 1
-            elif 100 <= weight < 110: weight_bins["100-110"] += 1
-            elif 110 <= weight < 120: weight_bins["110-120"] += 1
-            elif 120 <= weight < 130: weight_bins["120-130"] += 1
-            elif 130 <= weight < 140: weight_bins["130-140"] += 1
-            else: weight_bins["140+"] += 1
+            if 0.08 <= weight < 0.10: weight_bins["0.08-0.10"] += 1
+            elif 0.10 <= weight < 0.12: weight_bins["0.10-0.12"] += 1
+            elif 0.12 <= weight < 0.14: weight_bins["0.12-0.14"] += 1
+            elif 0.14 <= weight < 0.16: weight_bins["0.14-0.16"] += 1
+            elif 0.16 <= weight < 0.18: weight_bins["0.16-0.18"] += 1
+            elif 0.18 <= weight < 0.20: weight_bins["0.18-0.20"] += 1
+            elif weight >= 0.20: weight_bins["0.20+"] += 1
 
         return jsonify({
             "metrics": {
-                "length": round(latest_entry.length, 1) if latest_entry else 0,
-                "width": round(latest_entry.width, 1) if latest_entry else 0,
-                "area": round(latest_entry.area, 1) if latest_entry else 0,
-                "weight": round(latest_entry.weight, 1) if latest_entry else 0,
-                "count": latest_entry.count if latest_entry else 0
+                "length": round(avg_length, 1),
+                "width": round(sum(e.width for e in upload_data) / len(upload_data), 1),
+                "area": round(sum(e.area for e in upload_data) / len(upload_data), 1),
+                "weight": round(avg_weight, 3),
+                "count": total_count
             },
             "growthData": growth_data,
             "weightDistribution": {
                 "ranges": list(weight_bins.keys()),
                 "counts": list(weight_bins.values())
             },
-            "timestamp": latest_entry.timestamp.isoformat() if latest_entry else datetime.utcnow().isoformat()
+            "timestamp": image.timestamp.isoformat()
+        })
+    except Exception as e:
+        app.logger.error(f"Error fetching upload data for image {image_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/get_tray_data/<int:tray_number>')
+@login_required
+def get_tray_data(tray_number):
+    """
+    Fetches and processes historical data for a specific tray ID using
+    larvae measurements only.
+    """
+    try:
+        # Get all larvae measurements for this tray
+        tray_entries = LarvaeData.query.filter_by(tray_number=tray_number, user_id=current_user.id)\
+                                      .order_by(LarvaeData.timestamp.asc())\
+                                      .all()
+
+        if not tray_entries:
+            return jsonify({"error": f"No data found for tray {tray_number}"}), 404
+
+        # Build growth data - one point per timestamp group
+        growth_data = {"days": [], "length": [], "weight": []}
+        all_larvae_data = []
+        
+        start_time = tray_entries[0].timestamp
+        
+        # Group by exact timestamp so multiple larvae from the same capture stay together
+        grouped_data = {}
+        for entry in tray_entries:
+            grouped_data.setdefault(entry.timestamp, []).append(entry)
+            all_larvae_data.append(entry)
+
+        for timestamp in sorted(grouped_data.keys()):
+            entries = grouped_data[timestamp]
+            hours_elapsed = (timestamp - start_time).total_seconds() / 3600
+            avg_length = sum(l.length for l in entries) / len(entries)
+            avg_weight = sum(l.weight for l in entries) / len(entries)
+
+            growth_data["days"].append(round(hours_elapsed, 1))
+            growth_data["length"].append(round(avg_length, 1))
+            growth_data["weight"].append(round(avg_weight, 3))
+
+        latest_entries = grouped_data[sorted(grouped_data.keys())[-1]]
+        if latest_entries:
+            latest_metrics = {
+                "length": round(sum(l.length for l in latest_entries) / len(latest_entries), 1),
+                "width": round(sum(l.width for l in latest_entries) / len(latest_entries), 1),
+                "area": round(sum(l.area for l in latest_entries) / len(latest_entries), 1),
+                "weight": round(sum(l.weight for l in latest_entries) / len(latest_entries), 3),
+                "count": sum(l.count for l in latest_entries)
+            }
+        else:
+            latest_metrics = {"length": 0, "width": 0, "area": 0, "weight": 0, "count": 0}
+
+        # Calculate weight distribution across ALL uploads
+        weight_bins = {
+            "0.08-0.10": 0, "0.10-0.12": 0, "0.12-0.14": 0,
+            "0.14-0.16": 0, "0.16-0.18": 0, "0.18-0.20": 0, "0.20+": 0
+        }
+
+        for larva in all_larvae_data:
+            weight = larva.weight
+            if 0.08 <= weight < 0.10: weight_bins["0.08-0.10"] += 1
+            elif 0.10 <= weight < 0.12: weight_bins["0.10-0.12"] += 1
+            elif 0.12 <= weight < 0.14: weight_bins["0.12-0.14"] += 1
+            elif 0.14 <= weight < 0.16: weight_bins["0.14-0.16"] += 1
+            elif 0.16 <= weight < 0.18: weight_bins["0.16-0.18"] += 1
+            elif 0.18 <= weight < 0.20: weight_bins["0.18-0.20"] += 1
+            elif weight >= 0.20: weight_bins["0.20+"] += 1
+
+        return jsonify({
+            "metrics": latest_metrics,
+            "growthData": growth_data,
+            "weightDistribution": {
+                "ranges": list(weight_bins.keys()),
+                "counts": list(weight_bins.values())
+            },
+            "timestamp": latest_entries[0].timestamp.isoformat()
         })
     except Exception as e:
         app.logger.error(f"Error fetching tray data for tray {tray_number}: {e}")
@@ -774,72 +983,177 @@ def debug_stream_clients():
 @login_required
 def get_combined_tray_data():
     """
-    Fetches and processes combined data from all trays,
-    providing overall metrics, growth, and weight distribution.
+    Fetches and processes combined data from all trays for the current user.
+    Works with or without images - groups data by timestamp.
     """
     try:
         # Get all unique tray numbers
-        tray_numbers = [result[0] for result in db.session.query(LarvaeData.tray_number).distinct().all()]
-
+        tray_numbers = db.session.query(LarvaeData.tray_number)\
+                                 .filter_by(user_id=current_user.id)\
+                                 .distinct().all()
+        tray_numbers = [t[0] for t in tray_numbers]
+        
         if not tray_numbers:
-            return jsonify({"error": "No tray data available"}), 404
-
-        # Get all historical data from all trays
-        all_data = []
-        latest_entries = [] # To calculate combined latest metrics
-
-        for tray_num in tray_numbers:
-            tray_data = LarvaeData.query.filter_by(tray_number=tray_num).all()
-            all_data.extend(tray_data)
-            latest_entry = LarvaeData.query.filter_by(tray_number=tray_num)\
-                                         .order_by(LarvaeData.timestamp.desc())\
-                                         .first()
-            if latest_entry:
-                latest_entries.append(latest_entry)
-
-        if not all_data:
             return jsonify({"error": "No data available"}), 404
 
-        # Calculate combined latest metrics (average for length/width/area/weight, sum for count)
-        combined_metrics = {
-            "length": round(sum(e.length for e in latest_entries)/len(latest_entries), 1) if latest_entries else 0,
-            "width": round(sum(e.width for e in latest_entries)/len(latest_entries), 1) if latest_entries else 0,
-            "area": round(sum(e.area for e in latest_entries)/len(latest_entries), 1) if latest_entries else 0,
-            "weight": round(sum(e.weight for e in latest_entries)/len(latest_entries), 1) if latest_entries else 0,
-            "count": sum(e.count for e in latest_entries) if latest_entries else 0
-        }
+        # Build growth data for each tray separately
+        trays_growth_data = {}
+        all_larvae = []
+        
+        for tray_num in tray_numbers:
+            # Get all larvae data for this tray (ordered by timestamp)
+            larvae_data = LarvaeData.query.filter_by(tray_number=tray_num, user_id=current_user.id)\
+                                         .order_by(LarvaeData.timestamp.asc())\
+                                         .all()
+            
+            if not larvae_data:
+                continue
+            
+            all_larvae.extend(larvae_data)
+            
+            # Group larvae data by time (every measurement point is one data point)
+            tray_growth = {"days": [], "weight": []}
+            start_time = larvae_data[0].timestamp
+            
+            # Group by timestamp to avoid duplicates
+            grouped_data = {}
+            for larva in larvae_data:
+                ts = larva.timestamp
+                if ts not in grouped_data:
+                    grouped_data[ts] = []
+                grouped_data[ts].append(larva)
+            
+            for timestamp in sorted(grouped_data.keys()):
+                larvae_at_time = grouped_data[timestamp]
+                hours_elapsed = (timestamp - start_time).total_seconds() / 3600
+                avg_weight = sum(l.weight for l in larvae_at_time) / len(larvae_at_time)
+                
+                tray_growth["days"].append(round(hours_elapsed, 1))
+                tray_growth["weight"].append(round(avg_weight, 3))
+            
+            # Only include trays with at least 2 data points for growth trend
+            if len(tray_growth["days"]) >= 2:
+                trays_growth_data[str(tray_num)] = tray_growth
 
-        # Calculate combined growth data (average per day across all trays)
-        growth_data = {"days": [], "length": [], "weight": []}
-        day_data = defaultdict(list) # Stores all entries for a given 'day'
+        # Calculate combined metrics from ALL larvae
+        if all_larvae:
+            combined_metrics = {
+                "length": round(sum(l.length for l in all_larvae) / len(all_larvae), 1),
+                "width": round(sum(l.width for l in all_larvae) / len(all_larvae), 1),
+                "area": round(sum(l.area for l in all_larvae) / len(all_larvae), 1),
+                "weight": round(sum(l.weight for l in all_larvae) / len(all_larvae), 3),
+                "count": len(all_larvae)
+            }
+        else:
+            combined_metrics = {"length": 0, "width": 0, "area": 0, "weight": 0, "count": 0}
 
-        # Find the earliest timestamp among all data to set a consistent start day for combined growth
-        earliest_timestamp = min(entry.timestamp for entry in all_data)
-
-        for entry in all_data:
-            day = (entry.timestamp.date() - earliest_timestamp.date()).days + 1
-            day_data[day].append(entry)
-
-        for day, entries in sorted(day_data.items()):
-            growth_data["days"].append(day)
-            growth_data["length"].append(round(sum(e.length for e in entries)/len(entries), 1))
-            growth_data["weight"].append(round(sum(e.weight for e in entries)/len(entries), 1))
-
-        # Calculate combined weight distribution for all data
+        # Calculate weight distribution from all larvae
         weight_bins = {
-            "80-90": 0, "90-100": 0, "100-110": 0,
-            "110-120": 0, "120-130": 0, "130-140": 0, "140+": 0
+            "0.08-0.10": 0, "0.10-0.12": 0, "0.12-0.14": 0,
+            "0.14-0.16": 0, "0.16-0.18": 0, "0.18-0.20": 0, "0.20+": 0
         }
 
-        for entry in all_data:
+        for larva in all_larvae:
+            weight = larva.weight
+            if 0.08 <= weight < 0.10: weight_bins["0.08-0.10"] += 1
+            elif 0.10 <= weight < 0.12: weight_bins["0.10-0.12"] += 1
+            elif 0.12 <= weight < 0.14: weight_bins["0.12-0.14"] += 1
+            elif 0.14 <= weight < 0.16: weight_bins["0.14-0.16"] += 1
+            elif 0.16 <= weight < 0.18: weight_bins["0.16-0.18"] += 1
+            elif 0.18 <= weight < 0.20: weight_bins["0.18-0.20"] += 1
+            elif weight >= 0.20: weight_bins["0.20+"] += 1
+
+        return jsonify({
+            "metrics": combined_metrics,
+            "traysGrowthData": trays_growth_data,  # New: per-tray growth data
+            "weightDistribution": {
+                "ranges": list(weight_bins.keys()),
+                "counts": list(weight_bins.values())
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        app.logger.error(f"Error fetching combined tray data: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/compare')
+@login_required
+def compare_page():
+    """Render the comparison page"""
+    return render_template('compare.html', username=current_user.username)
+
+
+@app.route('/api/compare_trays')
+@login_required
+def compare_trays():
+    """
+    Get comparison data: latest average weight for each unique tray.
+    Returns data for scatter plot.
+    """
+    try:
+        # Get all unique tray numbers
+        tray_numbers = db.session.query(ImageFile.tray_number)\
+                                 .filter_by(user_id=current_user.id)\
+                                 .distinct().all()
+        tray_numbers = [t[0] for t in tray_numbers]
+        
+        if not tray_numbers:
+            return jsonify({"error": "No data available"}), 404
+        
+        comparison_data = []
+        
+        for tray_num in tray_numbers:
+            # Get the LATEST image upload for this tray
+            latest_image = ImageFile.query.filter_by(
+                tray_number=tray_num,
+                user_id=current_user.id
+            ).order_by(ImageFile.timestamp.desc()).first()
+            
+            if not latest_image:
+                continue
+            
+            # Get larvae data for this latest upload
+            from datetime import timedelta
+            time_window_start = latest_image.timestamp - timedelta(minutes=1)
+            time_window_end = latest_image.timestamp + timedelta(minutes=1)
+            
+            larvae = LarvaeData.query.filter_by(
+                tray_number=tray_num,
+                user_id=current_user.id
+            ).filter(
+                LarvaeData.timestamp >= time_window_start,
+                LarvaeData.timestamp <= time_window_end
+            ).all()
+            
+            if larvae:
+                avg_weight = sum(l.weight for l in larvae) / len(larvae)
+                avg_length = sum(l.length for l in larvae) / len(larvae)
+                count = len(larvae)
+                
+                comparison_data.append({
+                    "tray_number": tray_num,
+                    "avg_weight": round(avg_weight, 3),
+                    "avg_length": round(avg_length, 1),
+                    "count": count,
+                    "timestamp": latest_image.timestamp.isoformat()
+                })
+        
+        return jsonify({"trays": comparison_data})
+        
+    except Exception as e:
+        app.logger.error(f"Error in compare_trays: {e}")
+        return jsonify({"error": str(e)}), 500
+
+        for entry in all_larvae:
             weight = entry.weight
-            if 80 <= weight < 90: weight_bins["80-90"] += 1
-            elif 90 <= weight < 100: weight_bins["90-100"] += 1
-            elif 100 <= weight < 110: weight_bins["100-110"] += 1
-            elif 110 <= weight < 120: weight_bins["110-120"] += 1
-            elif 120 <= weight < 130: weight_bins["120-130"] += 1
-            elif 130 <= weight < 140: weight_bins["130-140"] += 1
-            else: weight_bins["140+"] += 1
+            if 0.08 <= weight < 0.10: weight_bins["0.08-0.10"] += 1
+            elif 0.10 <= weight < 0.12: weight_bins["0.10-0.12"] += 1
+            elif 0.12 <= weight < 0.14: weight_bins["0.12-0.14"] += 1
+            elif 0.14 <= weight < 0.16: weight_bins["0.14-0.16"] += 1
+            elif 0.16 <= weight < 0.18: weight_bins["0.16-0.18"] += 1
+            elif 0.18 <= weight < 0.20: weight_bins["0.18-0.20"] += 1
+            elif weight >= 0.20: weight_bins["0.20+"] += 1
 
         return jsonify({
             "metrics": combined_metrics,
@@ -858,19 +1172,20 @@ def get_combined_tray_data():
 @login_required
 def get_comparison_data():
     """
-    Fetches data for all trays to allow comparison on the dashboard.
+    Fetches data for all trays belonging to the current user to allow comparison on the dashboard.
     Includes latest metrics, growth data, and all individual weights for distribution.
     """
     try:
         trays_data_for_comparison = {}
 
-        # Dynamically get all unique tray numbers from the database
-        unique_trays = LarvaeData.query.with_entities(LarvaeData.tray_number).distinct().all()
+        # Dynamically get all unique tray numbers from the database for the current user
+        unique_trays = LarvaeData.query.with_entities(LarvaeData.tray_number)\
+                                       .filter_by(user_id=current_user.id).distinct().all()
 
         # Iterate through each unique tray number found
         for (tray_num,) in unique_trays:
-            # Fetch all historical data for the current tray, ordered by timestamp
-            all_tray_data = LarvaeData.query.filter_by(tray_number=tray_num)\
+            # Fetch all historical data for the current tray and user, ordered by timestamp
+            all_tray_data = LarvaeData.query.filter_by(tray_number=tray_num, user_id=current_user.id)\
                                           .order_by(LarvaeData.timestamp.asc())\
                                           .all()
 
@@ -911,14 +1226,17 @@ def get_comparison_data():
 
             # --- Get Latest Metrics for this Tray ---
             latest_entry = all_tray_data[-1]
+            
+            # --- Calculate Total Count (sum of all individual entries) ---
+            total_count = sum(entry.count for entry in all_tray_data)
 
             trays_data_for_comparison[str(tray_num)] = {
                 'latest': {
                     'length': round(latest_entry.length, 1),
                     'width': round(latest_entry.width, 1),
                     'area': round(latest_entry.area, 1),
-                    'weight': round(latest_entry.weight, 1),
-                    'count': latest_entry.count
+                    'weight': round(latest_entry.weight, 3),  # Show 3 decimals
+                    'count': total_count  # Use sum instead of latest_entry.count
                 },
                 'growthData': growth_data_for_tray,
                 'allWeights': all_individual_weights # This is the key for comparison weight distribution
@@ -937,17 +1255,28 @@ def get_comparison_data():
 @login_required
 def dashboard():
     """Renders the main dashboard page."""
-    # Dynamically get all unique tray numbers from database
-    unique_tray_numbers_raw = LarvaeData.query.with_entities(LarvaeData.tray_number).distinct().all()
+    # Build tray list from larvae measurements so the dashboard works without images
+    tray_numbers = db.session.query(LarvaeData.tray_number)\
+                             .filter_by(user_id=current_user.id)\
+                             .distinct()\
+                             .all()
+    tray_numbers = [t[0] for t in tray_numbers]
 
-    # Convert list of tuples to a sorted list of integers
-    unique_tray_numbers = sorted([tray_num for (tray_num,) in unique_tray_numbers_raw])
-
-    # Create a dictionary to hold the tray numbers to be passed to the template.
-    # The actual data for each tray will be fetched by JavaScript via AJAX.
     tray_data_for_template = {}
-    for tray_num in unique_tray_numbers:
-        tray_data_for_template[tray_num] = {} # Empty dict, frontend only needs the keys
+    for tray_number in tray_numbers:
+        tray_entries = LarvaeData.query.filter_by(tray_number=tray_number, user_id=current_user.id)\
+                                       .order_by(LarvaeData.timestamp.asc())\
+                                       .all()
+        if not tray_entries:
+            continue
+
+        latest_entry = tray_entries[-1]
+        tray_data_for_template[str(tray_number)] = {
+            'tray_number': tray_number,
+            'image_id': None,
+            'timestamp': latest_entry.timestamp.isoformat(),
+            'count': sum(entry.count for entry in tray_entries)
+        }
 
     return render_template('dashboard.html', tray_data=tray_data_for_template)
 
@@ -1304,6 +1633,12 @@ def on_connect(client, userdata, flags, rc, properties):
 def on_message(client, userdata, msg):
     """Callback function for when an MQTT message is received."""
     print(f"📨 MQTT received message on {msg.topic}")
+    print("⚠️ MQTT data reception disabled - using API for individual weights")
+    # MQTT now only used for monitoring, not saving data
+    # API endpoint /api/upload handles all data storage with individual weights
+    return
+    
+    # OLD CODE DISABLED - keeping for reference
     try:
         data = json.loads(msg.payload.decode('utf-8'))
         

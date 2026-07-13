@@ -19,7 +19,7 @@ def init_database():
             
             # Create test user if none exists
             if not User.query.filter_by(username='testuser').first():
-                admin_user = User(username='testuser')
+                admin_user = User(username='testuser', email='test@example.com', is_verified=True)
                 admin_user.set_password('password')
                 db.session.add(admin_user)
                 db.session.commit()

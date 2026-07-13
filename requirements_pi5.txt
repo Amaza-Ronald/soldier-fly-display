@@ -1,0 +1,9 @@
+opencv-python
+easyocr
+paho-mqtt==2.0.0
+requests==2.32.3
+Pillow==11.3.0
+scikit-image
+numpy
+RPi.GPIO
+ultralytics
